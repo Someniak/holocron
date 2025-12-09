@@ -17,17 +17,30 @@ A lightweight, security-focused CLI tool to mirror repositories from GitHub to a
    ```
 
 2.  Install dependencies:
+    
+    **Using uv (Recommended):**
+    ```bash
+    uv sync
+    ```
+
+    **Using pip:**
     ```bash
     pip install -r requirements.txt
     ```
 
 ## Usage
 
-**Prerequisite:** Set your access tokens.
+**Prerequisite:** Set your access tokens (or use a `.env` file).
 
 ```bash
 export GITHUB_TOKEN="your_github_pat"
 export GITLAB_TOKEN="your_gitlab_pat"
+```
+
+### Running with uv
+
+```bash
+uv run python src/g2g.py --help
 ```
 
 ### 1. Dry Run (Safe Mode)
