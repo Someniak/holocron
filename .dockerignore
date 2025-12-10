@@ -1,0 +1,7 @@
+mirror-data/
+.venv/
+.git/
+__pycache__/
+.env
+.DS_Store
+*.pyc

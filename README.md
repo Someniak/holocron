@@ -107,3 +107,27 @@ Force a sync of all repositories changed in the last 24 hours (1440 minutes).
 ```bash
 uv run python src/g2g.py --window 1440
 ```
+
+---
+
+## 🐳 Docker Support
+
+G2G-Sync is fully Dockerized using a lightweight Alpine image.
+
+### Building and Running
+```bash
+docker-compose up -d --build
+```
+This will start the container in watch mode (default).
+
+### Customizing Command
+You can override the command in `docker-compose.yml` to run in backup-only mode or change concurrency:
+
+```yaml
+services:
+  g2g-sync:
+    command: ["--backup-only", "--watch", "--concurrency", "10"]
+```
+
+### Persistence
+The `docker-compose.yml` mounts `./mirror-data` to persist your repositories outside the container.

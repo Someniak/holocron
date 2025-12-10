@@ -17,4 +17,7 @@ build-backend = "hatchling.build"
 packages = ["src"]
 
 [tool.uv]
-dev-dependencies = []
+dev-dependencies = [
+    "pytest>=8.0.0",
+    "pytest-mock>=3.12.0",
+]

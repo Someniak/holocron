@@ -1,0 +1,11 @@
+services:
+  g2g-sync:
+    build: .
+    container_name: g2g-sync
+    restart: unless-stopped
+    volumes:
+      - ./mirror-data:/app/mirror-data
+    env_file:
+      - .env
+    # Optional: Override command
+    # command: ["--watch", "--interval", "30", "--backup-only"]
