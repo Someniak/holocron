@@ -30,11 +30,15 @@ def sync_one_repo(repo, args, github_token, gitlab_token):
     # We assume the GitLab group matches the GitHub username or is defined in the URL
     # For this script, we construct a generic target URL. 
     # In a real scenario, you might want to customize the group logic.
-    gl_target_url = f"{GITLAB_API_URL.replace('/api/v4', '')}/{name}.git".replace("http://", f"http://oauth2:{gitlab_token}@")
+    if not args.backup_only:
+        gl_target_url = f"{GITLAB_API_URL.replace('/api/v4', '')}/{name}.git".replace("http://", f"http://oauth2:{gitlab_token}@")
+    else:
+        gl_target_url = None
 
     # 2. Dry Run Check
     if args.dry_run:
-        log(f"[DRY-RUN] Would sync '{name}' -> '{gl_target_url}'")
+        target_msg = gl_target_url if not args.backup_only else "(Local Backup Only)"
+        log(f"[DRY-RUN] Would sync '{name}' -> '{target_msg}'")
         return
 
     # 3. Create Storage Directory if needed
@@ -45,16 +49,21 @@ def sync_one_repo(repo, args, github_token, gitlab_token):
         if not os.path.exists(repo_dir):
             log(f"[{name}] Cloning new mirror...")
             subprocess.run(["git", "clone", "--mirror", gh_clone_url, repo_dir], check=True, stdout=subprocess.DEVNULL)
-            # Set push remote
-            subprocess.run(["git", "-C", repo_dir, "remote", "set-url", "--push", "origin", gl_target_url], check=True)
         else:
             log(f"[{name}] Fetching updates...", verbose_only=True, is_verbose_mode=args.verbose)
             subprocess.run(["git", "-C", repo_dir, "fetch", "-p", "origin"], check=True, stdout=subprocess.DEVNULL)
+        
+        # If not backup only, ensure push remote is set (optional but good practice if it changes)
+        if not args.backup_only:
+             subprocess.run(["git", "-C", repo_dir, "remote", "set-url", "--push", "origin", gl_target_url], check=True)
 
         # 5. Push to GitLab
-        # We always push to ensure the mirror is exact
-        subprocess.run(["git", "-C", repo_dir, "push", "--mirror"], check=True, stdout=subprocess.DEVNULL)
-        log(f"[{name}] Successfully synced.")
+        # We always push to ensure the mirror is exact, UNLESS backup-only mode is on
+        if not args.backup_only:
+            subprocess.run(["git", "-C", repo_dir, "push", "--mirror"], check=True, stdout=subprocess.DEVNULL)
+            log(f"[{name}] Successfully synced to GitLab.")
+        else:
+            log(f"[{name}] Successfully backed up locally.")
         
     except subprocess.CalledProcessError as e:
         log(f"ERROR syncing {name}: {e}")

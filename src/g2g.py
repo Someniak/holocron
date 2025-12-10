@@ -17,14 +17,22 @@ def main():
     gh_token = os.environ.get("GITHUB_TOKEN")
     gl_token = os.environ.get("GITLAB_TOKEN")
     
-    if not gh_token or not gl_token:
-        print("CRITICAL: Missing Environment Variables.")
-        print("Please set GITHUB_TOKEN and GITLAB_TOKEN.")
+    # Validation logic
+    if not gh_token:
+        print("CRITICAL: Missing GITHUB_TOKEN.")
+        sys.exit(1)
+
+    if not args.backup_only and not gl_token:
+        print("CRITICAL: Missing GITLAB_TOKEN.")
+        print("Please set GITLAB_TOKEN or use --backup-only.")
         sys.exit(1)
 
     log("Starting G2G-Sync...")
     if args.dry_run:
         log("!!! DRY RUN MODE ACTIVE !!!")
+
+    # Track the last synced push timestamp for each repo
+    synced_pushes = {}
 
     while True:
         repos = get_github_repos(gh_token, args.verbose)
@@ -34,9 +42,20 @@ def main():
         with ThreadPoolExecutor(max_workers=args.concurrency) as executor:
             future_to_repo = {}
             for repo in repos:
-                # If watching, use the smart filter. If running once, sync all (or customize logic).
-                if args.watch and not needs_sync(repo, args.window):
-                    continue
+                repo_name = repo['name']
+                pushed_at = repo.get('pushed_at')
+                repo_dir = os.path.join(args.storage, f"{repo_name}.git")
+
+                # If watching, use the smart filter. If running once, sync all.
+                if args.watch:
+                    # 1. Skip if we already synced this exact push
+                    if repo_name in synced_pushes and synced_pushes[repo_name] == pushed_at:
+                        continue
+                    
+                    # 2. Check time window (SKIP if old AND local repo exists)
+                    # If local repo is missing, we MUST sync (bootstrap), regardless of age.
+                    if os.path.exists(repo_dir) and not needs_sync(repo, args.window):
+                         continue
                     
                 future = executor.submit(sync_one_repo, repo, args, gh_token, gl_token)
                 future_to_repo[future] = repo
@@ -46,6 +65,9 @@ def main():
                 try:
                     future.result()
                     sync_count += 1
+                    # Update tracking on success
+                    if repo.get('pushed_at'):
+                        synced_pushes[repo['name']] = repo['pushed_at']
                 except Exception as exc:
                     log(f"[{repo['name']}] generated an exception: {exc}")
 

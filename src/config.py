@@ -28,5 +28,6 @@ def parse_args():
     parser.add_argument("--window", type=int, default=10, help="Only sync repos updated in the last X minutes")
     parser.add_argument("--storage", type=str, default="./mirror-data", help="Local path to store git repositories")
     parser.add_argument("--concurrency", type=int, default=5, help="Number of concurrent sync threads (default: 5)")
+    parser.add_argument("--backup-only", action="store_true", help="Mirror locally only, skip pushing to GitLab")
 
     return parser.parse_args()
