@@ -2,6 +2,7 @@
 import os
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Import from local modules
 from config import parse_args
@@ -30,13 +31,23 @@ def main():
         log(f"Found {len(repos)} repositories on GitHub.", is_verbose_mode=args.verbose)
 
         sync_count = 0
-        for repo in repos:
-            # If watching, use the smart filter. If running once, sync all (or customize logic).
-            if args.watch and not needs_sync(repo, args.window):
-                continue
-                
-            sync_one_repo(repo, args, gh_token, gl_token)
-            sync_count += 1
+        with ThreadPoolExecutor(max_workers=args.concurrency) as executor:
+            future_to_repo = {}
+            for repo in repos:
+                # If watching, use the smart filter. If running once, sync all (or customize logic).
+                if args.watch and not needs_sync(repo, args.window):
+                    continue
+                    
+                future = executor.submit(sync_one_repo, repo, args, gh_token, gl_token)
+                future_to_repo[future] = repo
+
+            for future in as_completed(future_to_repo):
+                repo = future_to_repo[future]
+                try:
+                    future.result()
+                    sync_count += 1
+                except Exception as exc:
+                    log(f"[{repo['name']}] generated an exception: {exc}")
 
         if sync_count > 0:
             log(f"Sync cycle complete. Updated {sync_count} repositories.")
