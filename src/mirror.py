@@ -46,24 +46,66 @@ def sync_one_repo(repo, args, github_token, gitlab_token):
 
     # 4. Git Operations
     try:
+        # Use --quiet to suppress progress bars which mess up parallel logs
+        # We also redirect stderr to DEVNULL to be completely silent unless it fails (which check=True handles by raising)
+        # Note: If git fails, we won't see the error message if we silence stderr perfectly. 
+        # A better approach is capture_output=True and log stderr on error.
+        
         if not os.path.exists(repo_dir):
             log(f"[{name}] Cloning new mirror...")
-            subprocess.run(["git", "clone", "--mirror", gh_clone_url, repo_dir], check=True, stdout=subprocess.DEVNULL)
+            try:
+                subprocess.run(["git", "clone", "--mirror", "--quiet", gh_clone_url, repo_dir], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            except subprocess.CalledProcessError as e:
+                # Decode stderr for the log
+                err_msg = e.stderr.decode().strip() if e.stderr else str(e)
+                raise subprocess.CalledProcessError(e.returncode, e.cmd, output=e.output, stderr=err_msg)
+
         else:
             log(f"[{name}] Fetching updates...", verbose_only=True, is_verbose_mode=args.verbose)
-            subprocess.run(["git", "-C", repo_dir, "fetch", "-p", "origin"], check=True, stdout=subprocess.DEVNULL)
+            try:
+                subprocess.run(["git", "-C", repo_dir, "fetch", "--quiet", "-p", "origin"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            except subprocess.CalledProcessError as e:
+                err_msg = e.stderr.decode().strip() if e.stderr else str(e)
+                raise subprocess.CalledProcessError(e.returncode, e.cmd, output=e.output, stderr=err_msg)
         
         # If not backup only, ensure push remote is set (optional but good practice if it changes)
         if not args.backup_only:
-             subprocess.run(["git", "-C", repo_dir, "remote", "set-url", "--push", "origin", gl_target_url], check=True)
+             subprocess.run(["git", "-C", repo_dir, "remote", "set-url", "--push", "origin", gl_target_url], check=True, stderr=subprocess.DEVNULL)
 
         # 5. Push to GitLab
         # We always push to ensure the mirror is exact, UNLESS backup-only mode is on
         if not args.backup_only:
-            subprocess.run(["git", "-C", repo_dir, "push", "--mirror"], check=True, stdout=subprocess.DEVNULL)
-            log(f"[{name}] Successfully synced to GitLab.")
+            try:
+                subprocess.run(["git", "-C", repo_dir, "push", "--mirror", "--quiet"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                log(f"[{name}] Successfully synced to GitLab.")
+            except subprocess.CalledProcessError as e:
+                err_msg = e.stderr.decode().strip() if e.stderr else str(e)
+                raise subprocess.CalledProcessError(e.returncode, e.cmd, output=e.output, stderr=err_msg)
         else:
             log(f"[{name}] Successfully backed up locally.")
+        
+        # 6. Optional Checkout (Sidecar)
+        if args.checkout:
+            # Derived directly from repo_dir (which ends in .git)
+            checkout_dir = repo_dir.replace(".git", "")
+            
+            if not os.path.exists(checkout_dir):
+                log(f"[{name}] Creating checkout...", verbose_only=True, is_verbose_mode=args.verbose)
+                try:
+                    # Clone from the local mirror
+                    subprocess.run(["git", "clone", "--quiet", repo_dir, checkout_dir], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                except subprocess.CalledProcessError as e:
+                    err_msg = e.stderr.decode().strip() if e.stderr else str(e)
+                    log(f"[{name}] Failed to create checkout: {err_msg}")
+            else:
+                log(f"[{name}] Updating checkout...", verbose_only=True, is_verbose_mode=args.verbose)
+                try:
+                    # We use pull to update the current branch. 
+                    # If this fails (e.g. merge conflict, though unlikely for a backup), we catch it.
+                    subprocess.run(["git", "-C", checkout_dir, "pull", "--quiet"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                except subprocess.CalledProcessError as e:
+                    err_msg = e.stderr.decode().strip() if e.stderr else str(e)
+                    log(f"[{name}] Failed to update checkout: {err_msg}")
         
     except subprocess.CalledProcessError as e:
         log(f"ERROR syncing {name}: {e}")

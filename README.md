@@ -1,72 +1,109 @@
 # G2G-Sync (GitHub to GitLab Mirror)
 
-A lightweight, security-focused CLI tool to mirror repositories from GitHub to a private GitLab instance. Designed for GRC compliance, backup strategies, and automated mirroring.
+A lightweight, security-focused CLI tool to mirror repositories from GitHub to a private GitLab instance (or local backup). Designed for GRC compliance, backup strategies, and automated mirroring.
 
 ## Features
-* **Smart Sync:** Uses timestamp filtering to only sync repositories that have changed (saves bandwidth).
-* **Unidirectional Mirror:** Enforces GitHub as the "Source of Truth" (overwrites GitLab changes).
-* **Automated:** Runs as a CLI tool or a Docker container.
-* **Secure:** Uses environment variables for tokens; no credentials stored on disk.
+
+- **🛡️ Secure Tokens**: Uses environment variables for authentication. No credentials stored on disk.
+- **⚡ Parallel Syncing**: Syncs multiple repositories simultaneously using thread pools.
+- **🔄 Smart Watch Mode**: Intelligent watchdog that continuously mirrors updates.
+    - Prevents redundant syncs (only syncs upon new pushes).
+    - Bootstraps missing repositories automatically.
+- **📂 Local Backup Mode**: Can function as a pure local backup tool (no GitLab required).
+- **👀 Sidecar Checkout**: Optional feature to maintain a visible file tree alongside the bare git mirror.
+- **🧹 Storage Management**: Custom raw storage paths.
+
+---
 
 ## Installation
 
+### Prerequisites
+- Python 3.8+
+- [uv](https://github.com/astral-sh/uv) (Recommended) or pip.
+
+### Steps
 1. Clone the repository:
    ```bash
    git clone https://github.com/your-username/g2g-sync.git
    cd g2g-sync
    ```
 
-2.  Install dependencies:
-    
-    **Using uv (Recommended):**
-    ```bash
-    uv sync
-    ```
+2. Install dependencies:
+   **Using uv (Recommended):**
+   ```bash
+   uv sync
+   ```
+   **Using pip:**
+   ```bash
+   pip install -r requirements.txt
+   ```
 
-    **Using pip:**
-    ```bash
-    pip install -r requirements.txt
-    ```
+---
 
-## Usage
+## Configuration
 
-**Prerequisite:** Set your access tokens (or use a `.env` file).
+Set your access tokens using environment variables or a `.env` file in the root directory.
 
 ```bash
+# Required for GitHub Access
 export GITHUB_TOKEN="your_github_pat"
+
+# Required for GitLab Push (Optional if using --backup-only)
 export GITLAB_TOKEN="your_gitlab_pat"
+
+# Optional: Custom GitLab URL (Defaults to http://gitlab.local/api/v4)
+export GITLAB_API_URL="https://gitlab.example.com/api/v4"
 ```
 
-### Running with uv
+---
+
+## Usage Guide
+
+Run the script using `uv run` or `python`:
 
 ```bash
-uv run python src/g2g.py --help
+uv run python src/g2g.py [OPTIONS]
 ```
 
-### 1. Dry Run (Safe Mode)
+### Command Line Arguments
 
-Check what would happen without actually downloading code.
+| Argument | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| **`--dry-run`** | Flag | `False` | Simulate execution. Prints what would happen without making network changes. |
+| **`--watch`** | Flag | `False` | Run continuously in IDLE/Daemon mode. Checks for updates periodically. |
+| **`--interval`** | Int | `60` | Time in seconds to wait between sync cycles in watch mode. |
+| **`--concurrency`** | Int | `5` | Number of parallel threads to use for syncing. Increase for faster throughput. |
+| **`--backup-only`** | Flag | `False` | **Local Mode**: Skips pushing to GitLab. Useful for pure local backups. `GITLAB_TOKEN` not required. |
+| **`--checkout`** | Flag | `False` | **Sidecar**: Creates a visible working tree (`repo/`) alongside the bare mirror (`repo.git`). |
+| **`--storage`** | Path | `./mirror-data` | Directory where repositories will be stored. |
+| **`--window`** | Int | `10` | Only syncs repositories updated in the last `X` minutes (Watch mode optimization). |
+| **`--verbose`** | Flag | `False` | Enable detailed logging (useful for debugging). |
 
+---
+
+## Common Examples
+
+### 1. Simple Dry Run
+Check what valid repositories are found and what would be synced.
 ```bash
-python src/g2g.py --dry-run --verbose
+uv run python src/g2g.py --dry-run
 ```
 
-### 2. Manual Run (One-time)
-
-Sync all repositories immediately and exit.
-
+### 2. Full Local Backup (With Visible Files)
+Backup all your repositories to a custom folder, preserving visible files, using 10 concurrent threads.
 ```bash
-python src/g2g.py --window 1440  # Sync everything changed in the last 24 hours
+uv run python src/g2g.py --backup-only --checkout --concurrency 10 --storage /Volumes/BackupDrive/GitHub
 ```
 
-### 3. Watch Mode (Daemon)
-
-Run continuously, checking for updates every 60 seconds.
-
+### 3. Continuous Mirror to GitLab
+Run as a daemon, checking every 30 seconds, syncing to your GitLab instance.
 ```bash
-python src/g2g.py --watch --interval 60
+uv run python src/g2g.py --watch --interval 30 --concurrency 5
 ```
+*Note: This requires `GITLAB_TOKEN` to be set.*
 
-## Docker Support
-
-(Coming soon - mapped to Milestone 2)
+### 4. Quick Catch-up
+Force a sync of all repositories changed in the last 24 hours (1440 minutes).
+```bash
+uv run python src/g2g.py --window 1440
+```
