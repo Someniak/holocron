@@ -1,6 +1,6 @@
 import requests
-from logger import log
-from config import GITHUB_API_URL
+from .logger import log
+from .config import GITHUB_API_URL
 
 def get_all_pages(base_url, headers, verbose, context_name, query_params=None):
     """Helper to fetch all pages from a GitHub endpoint."""

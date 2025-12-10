@@ -1,7 +1,7 @@
 import pytest
 import requests
 from unittest.mock import Mock, patch
-from github_provider import get_all_pages, get_github_repos
+from holocron.github_provider import get_all_pages, get_github_repos
 
 @patch("requests.get")
 def test_get_all_pages_pagination(mock_get):
@@ -26,7 +26,7 @@ def test_get_all_pages_pagination(mock_get):
     assert mock_get.call_count == 2
 
 @patch("requests.get")
-@patch("github_provider.log")
+@patch("holocron.github_provider.log")
 def test_get_all_pages_error(mock_log, mock_get):
     # Simulate a network error
     mock_get.side_effect = requests.RequestException("Boom")
@@ -48,7 +48,7 @@ def test_get_all_pages_http_error(mock_get):
     items = get_all_pages("url", {}, False, "context")
     assert len(items) == 0
 
-@patch("github_provider.get_all_pages")
+@patch("holocron.github_provider.get_all_pages")
 def test_get_github_repos_with_orgs(mock_get_pages):
     # Mock sequence:
     # 1. User repos (2 items)

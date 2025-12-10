@@ -5,10 +5,10 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Import from local modules
-from config import parse_args
-from logger import log
-from github_provider import get_github_repos
-from mirror import needs_sync, sync_one_repo
+from .config import parse_args
+from .logger import log
+from .github_provider import get_github_repos
+from .mirror import needs_sync, sync_one_repo
 
 def main():
     args = parse_args()

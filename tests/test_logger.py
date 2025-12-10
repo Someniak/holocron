@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import patch
-from logger import log
+from holocron.logger import log
 
 @patch("builtins.print")
 def test_log_basic(mock_print):

@@ -1,8 +1,8 @@
 import os
 import subprocess
 from datetime import datetime, timedelta, timezone
-from logger import log
-from config import GITLAB_API_URL
+from .logger import log
+from .config import GITLAB_API_URL
 
 def needs_sync(repo, window_minutes):
     """

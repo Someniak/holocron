@@ -1,7 +1,7 @@
 import sys
 import pytest
 from unittest.mock import patch
-from config import parse_args
+from holocron.config import parse_args
 
 def test_parse_args_defaults():
     with patch.object(sys, 'argv', ['g2g.py']):

@@ -2,7 +2,7 @@ import pytest
 import subprocess
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
-from mirror import needs_sync, sync_one_repo
+from holocron.mirror import needs_sync, sync_one_repo
 
 def test_needs_sync_true():
     # 5 minutes ago
@@ -50,7 +50,8 @@ def test_sync_one_repo_backup_only(mock_exists, mock_makedirs, mock_run):
 @patch("subprocess.run")
 @patch("os.makedirs")
 @patch("os.path.exists")
-def test_sync_one_repo_checkout(mock_exists, mock_makedirs, mock_run):
+@patch("holocron.mirror.log")
+def test_sync_one_repo_checkout(mock_log, mock_exists, mock_makedirs, mock_run):
     args = MagicMock()
     args.backup_only = True
     args.checkout = True
@@ -118,7 +119,8 @@ def test_sync_one_repo_git_failure(mock_exists, mock_makedirs, mock_run):
 @patch("subprocess.run")
 @patch("os.makedirs")
 @patch("os.path.exists")
-def test_sync_one_repo_checkout_failure(mock_exists, mock_makedirs, mock_run):
+@patch("holocron.mirror.log")
+def test_sync_one_repo_checkout_failure(mock_log, mock_exists, mock_makedirs, mock_run):
     # Test failure during checkout update
     args = MagicMock()
     args.checkout = True
@@ -140,7 +142,7 @@ def test_sync_one_repo_checkout_failure(mock_exists, mock_makedirs, mock_run):
 @patch("subprocess.run")
 @patch("os.makedirs")
 @patch("os.path.exists")
-@patch("mirror.log")
+@patch("holocron.mirror.log")
 def test_sync_one_repo_dry_run(mock_log, mock_exists, mock_makedirs, mock_run):
     args = MagicMock()
     args.dry_run = True
@@ -159,7 +161,7 @@ def test_sync_one_repo_dry_run(mock_log, mock_exists, mock_makedirs, mock_run):
 @patch("subprocess.run")
 @patch("os.makedirs")
 @patch("os.path.exists")
-@patch("mirror.log")
+@patch("holocron.mirror.log")
 def test_sync_one_repo_dry_run_backup_only(mock_log, mock_exists, mock_makedirs, mock_run):
     args = MagicMock()
     args.dry_run = True
@@ -178,7 +180,7 @@ def test_sync_one_repo_dry_run_backup_only(mock_log, mock_exists, mock_makedirs,
 @patch("subprocess.run")
 @patch("os.makedirs")
 @patch("os.path.exists")
-@patch("mirror.log")
+@patch("holocron.mirror.log")
 def test_sync_one_repo_full_flow_success(mock_log, mock_exists, mock_makedirs, mock_run):
     args = MagicMock()
     args.backup_only = False
@@ -211,7 +213,7 @@ def test_sync_one_repo_full_flow_success(mock_log, mock_exists, mock_makedirs, m
 @patch("subprocess.run")
 @patch("os.makedirs")
 @patch("os.path.exists")
-@patch("mirror.log")
+@patch("holocron.mirror.log")
 def test_sync_one_repo_fetch_error(mock_log, mock_exists, mock_makedirs, mock_run):
     args = MagicMock()
     args.backup_only = True
@@ -242,7 +244,7 @@ def test_sync_one_repo_fetch_error(mock_log, mock_exists, mock_makedirs, mock_ru
 @patch("subprocess.run")
 @patch("os.makedirs")
 @patch("os.path.exists")
-@patch("mirror.log")
+@patch("holocron.mirror.log")
 def test_sync_one_repo_push_error(mock_log, mock_exists, mock_makedirs, mock_run):
     args = MagicMock()
     args.backup_only = False
