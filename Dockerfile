@@ -16,7 +16,7 @@ COPY src/ src/
 RUN mkdir -p mirror-data
 
 # Default entrypoint
-ENTRYPOINT ["python", "src/g2g.py"]
+ENTRYPOINT ["python", "src/holocron.py"]
 
 # Default command (can be overridden)
 CMD ["--watch", "--interval", "60"]

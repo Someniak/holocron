@@ -2,7 +2,7 @@ import os
 import sys
 import pytest
 from unittest.mock import MagicMock, patch, call
-from g2g import main
+from holocron import main
 
 @pytest.fixture
 def mock_env():
@@ -11,11 +11,11 @@ def mock_env():
         "GITLAB_TOKEN": "gl_token"
     }
 
-@patch("g2g.parse_args")
+@patch("holocron.parse_args")
 @patch.dict(os.environ, {"GITHUB_TOKEN": "gh_token", "GITLAB_TOKEN": "gl_token"})
-@patch("g2g.get_github_repos")
-@patch("g2g.sync_one_repo")
-@patch("g2g.log")
+@patch("holocron.get_github_repos")
+@patch("holocron.sync_one_repo")
+@patch("holocron.log")
 def test_main_single_run(mock_log, mock_sync, mock_get_repos, mock_parse, mock_env):
     # Setup args: single run (not watch), dry run False
     args = MagicMock()
@@ -39,7 +39,7 @@ def test_main_single_run(mock_log, mock_sync, mock_get_repos, mock_parse, mock_e
     mock_sync.assert_called_once()
     assert mock_log.call_count >= 2 # Starting + Found + Complete
 
-@patch("g2g.parse_args")
+@patch("holocron.parse_args")
 @patch.dict(os.environ, {}, clear=True) # Empty env
 def test_main_missing_tokens(mock_parse):
     args = MagicMock()
@@ -50,7 +50,7 @@ def test_main_missing_tokens(mock_parse):
         main()
     assert excinfo.value.code == 1
 
-@patch("g2g.parse_args")
+@patch("holocron.parse_args")
 @patch.dict(os.environ, {"GITHUB_TOKEN": "gh"}, clear=True)
 def test_main_missing_gitlab_token_normal_mode(mock_parse):
     args = MagicMock()
@@ -62,9 +62,9 @@ def test_main_missing_gitlab_token_normal_mode(mock_parse):
         main()
     assert excinfo.value.code == 1
 
-@patch("g2g.parse_args")
-@patch.dict(os.environ, {"GITHUB_TOKEN": "gh"}, clear=True)
-@patch("g2g.get_github_repos")
+@patch("holocron.parse_args")
+@patch.dict(os.environ, {"GITHUB_TOKEN": "gh", "GITLAB_TOKEN": "gl"})
+@patch("holocron.get_github_repos")
 def test_main_backup_only_no_gitlab_token(mock_get_repos, mock_parse):
     # Should NOT exit
     args = MagicMock()
@@ -82,10 +82,10 @@ def test_main_backup_only_no_gitlab_token(mock_get_repos, mock_parse):
     except SystemExit:
         pytest.fail("Should not exit in backup-only mode without GITLAB_TOKEN")
 
-@patch("g2g.parse_args")
+@patch("holocron.parse_args")
 @patch.dict(os.environ, {"GITHUB_TOKEN": "gh", "GITLAB_TOKEN": "gl"})
-@patch("g2g.get_github_repos")
-@patch("g2g.sync_one_repo")
+@patch("holocron.get_github_repos")
+@patch("holocron.sync_one_repo")
 @patch("time.sleep")
 def test_main_watch_loop(mock_sleep, mock_sync, mock_get_repos, mock_parse):
     # Test watch mode loop
@@ -122,11 +122,11 @@ def test_main_watch_loop(mock_sleep, mock_sync, mock_get_repos, mock_parse):
     # Sync should only be called ONCE despite 2 cycles, because of redundancy check
     assert mock_sync.call_count == 1
 
-@patch("g2g.parse_args")
+@patch("holocron.parse_args")
 @patch.dict(os.environ, {"GITHUB_TOKEN": "gh", "GITLAB_TOKEN": "gl"})
-@patch("g2g.get_github_repos")
-@patch("g2g.sync_one_repo")
-@patch("g2g.log")
+@patch("holocron.get_github_repos")
+@patch("holocron.sync_one_repo")
+@patch("holocron.log")
 def test_main_verbose_no_sync(mock_log, mock_sync, mock_get_repos, mock_parse):
     # Test path where sync_count is 0 and verbose is True
     args = MagicMock()
@@ -146,11 +146,11 @@ def test_main_verbose_no_sync(mock_log, mock_sync, mock_get_repos, mock_parse):
     log_calls = [str(call) for call in mock_log.call_args_list]
     assert any("No changes detected" in call for call in log_calls)
 
-@patch("g2g.parse_args")
+@patch("holocron.parse_args")
 @patch.dict(os.environ, {"GITHUB_TOKEN": "gh", "GITLAB_TOKEN": "gl"})
-@patch("g2g.get_github_repos")
-@patch("g2g.sync_one_repo")
-@patch("g2g.log")
+@patch("holocron.get_github_repos")
+@patch("holocron.sync_one_repo")
+@patch("holocron.log")
 def test_main_exception_logging(mock_log, mock_sync, mock_get_repos, mock_parse):
     # Test exception within thread execution
     args = MagicMock()

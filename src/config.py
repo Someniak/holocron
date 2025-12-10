@@ -16,7 +16,9 @@ def parse_args():
     Sets up the command line arguments.
     This allows the user to run: 'python g2g.py --dry-run'
     """
-    parser = argparse.ArgumentParser(description="G2G-Sync: The GitHub to GitLab Mirroring Tool")
+    parser = argparse.ArgumentParser(
+        description="Holocron: GitHub to GitLab/Local Mirroring Tool"
+    )
     
     # Flags (True/False options)
     parser.add_argument("--dry-run", action="store_true", help="Simulate execution without making changes")

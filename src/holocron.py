@@ -27,7 +27,7 @@ def main():
         print("Please set GITLAB_TOKEN or use --backup-only.")
         sys.exit(1)
 
-    log("Starting G2G-Sync...")
+    log("Initializing Holocron...")
     if args.dry_run:
         log("!!! DRY RUN MODE ACTIVE !!!")
 

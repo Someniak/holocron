@@ -1,7 +1,7 @@
 services:
-  g2g-sync:
+  holocron:
     build: .
-    container_name: g2g-sync
+    container_name: holocron
     restart: unless-stopped
     volumes:
       - ./mirror-data:/app/mirror-data
