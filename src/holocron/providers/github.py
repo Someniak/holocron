@@ -1,18 +1,20 @@
 import requests
+from datetime import datetime
 from ..logger import log
 from ..config import GITHUB_API_URL
-from .base import Provider
+from .base import Provider, Repository
 
 class GitHubProvider(Provider):
     def __init__(self, token, api_url=GITHUB_API_URL):
         self.token = token
         self.api_url = api_url
 
-    def get_remote_url(self, repo: dict) -> str:
+    def get_remote_url(self, repo: Repository) -> str:
         """Constructs the authenticated clone URL."""
-        return repo['clone_url'].replace("https://", f"https://oauth2:{self.token}@")
+        # Dataclass field access
+        return repo.clone_url.replace("https://", f"https://oauth2:{self.token}@")
 
-    def fetch_repos(self, verbose=False):
+    def fetch_repos(self, verbose: bool) -> list[Repository]:
         """Fetches all repositories from the user AND their organizations."""
         headers = {'Authorization': f'token {self.token}'}
         all_repos = []
@@ -30,10 +32,10 @@ class GitHubProvider(Provider):
             }
         )
         
-        for repo in user_repos:
-            if repo['id'] not in seen_ids:
-                all_repos.append(repo)
-                seen_ids.add(repo['id'])
+        for item in user_repos:
+            if item['id'] not in seen_ids:
+                all_repos.append(self._to_repository(item))
+                seen_ids.add(item['id'])
 
         # 2. Fetch User Organizations
         orgs = self._get_all_pages(
@@ -53,12 +55,28 @@ class GitHubProvider(Provider):
                 f"repositories for organization '{org_name}'",
                 query_params={"type": "all"}
             )
-            for repo in org_repos:
-                if repo['id'] not in seen_ids:
-                    all_repos.append(repo)
-                    seen_ids.add(repo['id'])
+            for item in org_repos:
+                if item['id'] not in seen_ids:
+                    all_repos.append(self._to_repository(item))
+                    seen_ids.add(item['id'])
                     
         return all_repos
+
+    def _to_repository(self, item: dict) -> Repository:
+        """Helper to convert GitHub API dict to Repository object."""
+        pushed_at = None
+        if item.get('pushed_at'):
+            try:
+                pushed_at = datetime.strptime(item['pushed_at'], "%Y-%m-%dT%H:%M:%SZ")
+            except ValueError:
+                pass
+                
+        return Repository(
+            name=item['name'],
+            clone_url=item['clone_url'],
+            size=item.get('size', 0),
+            pushed_at=pushed_at
+        )
 
     def _get_all_pages(self, base_url, headers, verbose, context_name, query_params=None):
         """Helper to fetch all pages from a GitHub endpoint."""

@@ -24,8 +24,8 @@ def run_sync_cycle(args, source_provider, destination_provider, synced_pushes):
     with ThreadPoolExecutor(max_workers=args.concurrency) as executor:
         future_to_repo = {}
         for repo in repos:
-            repo_name = repo['name']
-            pushed_at = repo.get('pushed_at')
+            repo_name = repo.name
+            pushed_at = repo.pushed_at
             repo_dir = os.path.join(args.storage, f"{repo_name}.git")
 
             # Smart filtering
@@ -46,10 +46,10 @@ def run_sync_cycle(args, source_provider, destination_provider, synced_pushes):
             try:
                 future.result()
                 sync_count += 1
-                if repo.get('pushed_at'):
-                    synced_pushes[repo['name']] = repo['pushed_at']
+                if repo.pushed_at:
+                    synced_pushes[repo.name] = repo.pushed_at
             except Exception as exc:
-                log(f"[{repo['name']}] generated an exception: {exc}")
+                log(f"[{repo.name}] generated an exception: {exc}")
     
     return sync_count
 

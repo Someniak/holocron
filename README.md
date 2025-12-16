@@ -64,12 +64,23 @@ uv run python src/holocron.py --backup-only --checkout --concurrency 10
 
 ## Configuration
 Holocron uses environment variables for secrets:
-
-| Variable | Description | Required | 
-| :--- | :--- | :--- |
-| `GITHUB_TOKEN` | Your GitHub Personal Access Token (repo scope) | **Yes** |
-| `GITLAB_TOKEN` | Your GitLab Personal Access Token (api scope) | No (if `--backup-only`) |
-| `GITLAB_API_URL` | URL to your GitLab API (default: `http://gitlab.local/api/v4`) | No |
+ 
+ | Variable | Description | Required | 
+ | :--- | :--- | :--- |
+ | `GITHUB_TOKEN` | Your GitHub Personal Access Token (repo scope) | **Yes** |
+ | `GITLAB_TOKEN` | Your GitLab Personal Access Token (api scope) | No (if `--backup-only`) |
+ | `GITLAB_API_URL` | URL to your GitLab API (default: `http://gitlab.local/api/v4`) | No |
+ 
+ ### API Permissions
+ Ensure your tokens have the minimum required scopes:
+ 
+ **GitHub Token (`GITHUB_TOKEN`)**
+ - `repo` (Full control of private repositories) - *Required for reading private repos*
+ - `read:org` (Read org and team membership) - *Required for fetching organization repos*
+ 
+ **GitLab Token (`GITLAB_TOKEN`)**
+ - `api` (Grants complete read/write access to the API) - *Simplest option*
+ - OR `read_repository` + `write_repository` - *More granular control*
 
 ### Command Line Arguments
 | Flag | Default | Description |

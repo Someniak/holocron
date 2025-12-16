@@ -1,18 +1,28 @@
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from datetime import datetime
+
+@dataclass
+class Repository:
+    """Repository object - spec v1"""
+    name: str
+    clone_url: str
+    size: int = 0  # in KB
+    pushed_at: datetime | None = None
 
 class Provider(ABC):
     """Abstract base class for all providers (Source or Destination)."""
 
     @abstractmethod
-    def fetch_repos(self, verbose: bool) -> list[dict]:
+    def fetch_repos(self, verbose: bool) -> list[Repository]:
         """
         Fetches a list of repositories from the provider.
-        Returns a list of dicts. Each dict MUST contain at least 'name'.
+        Returns a list of Repository objects.
         """
         pass
 
     @abstractmethod
-    def get_remote_url(self, repo: dict) -> str:
+    def get_remote_url(self, repo: Repository) -> str:
         """
         Returns the authenticated remote URL for a repository.
         If the provider is a source, this is the clone URL.

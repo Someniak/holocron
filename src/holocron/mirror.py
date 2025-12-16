@@ -5,21 +5,20 @@ from .logger import log
 
 def needs_sync(repo, window_minutes):
     """
-    Returns True if the repo was pushed to within the 'window_minutes'.
+    Checks if the repository has been pushed to within the last `window_minutes`.
     """
-    pushed_at_str = repo.get('pushed_at')
-    if not pushed_at_str:
+    if not repo.pushed_at:
         return False
         
-    # Parse ISO timestamp (Handles the 'Z' for UTC)
-    pushed_at = datetime.fromisoformat(pushed_at_str.replace('Z', '+00:00'))
-    now = datetime.now(timezone.utc)
-    
+    now = datetime.now(timezone.utc).replace(tzinfo=None) # naive UTC
+    # pushed_at is already a datetime object from the provider (naive UTC usually)
+    pushed_at = repo.pushed_at
+
     # Check if the difference is inside our window
     return (now - pushed_at) < timedelta(minutes=window_minutes)
 
 def sync_one_repo(repo, args, source_provider, destination_provider=None):
-    name = repo['name']
+    name = repo.name
     repo_dir = os.path.join(args.storage, f"{name}.git")
     
     # 1. Construct Secure URLs (Injecting tokens)

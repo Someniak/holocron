@@ -20,7 +20,7 @@ def format_size(kb):
 
 def print_storage_estimate(repos, args):
     """Calculates and logs the estimated storage size."""
-    total_kb = sum(repo.get('size', 0) for repo in repos)
+    total_kb = sum(repo.size for repo in repos)
     log(f"Total remote size (compressed): {format_size(total_kb)}", is_verbose_mode=args.verbose)
 
     if args.checkout:
