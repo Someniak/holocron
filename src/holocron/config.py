@@ -15,7 +15,7 @@ __license__ = "MIT"
 # --- CONFIGURATION DEFAULTS ---
 # We use Environment Variables for security. 
 # Never hardcode passwords in open source code!
-GITHUB_API_URL = "https://api.github.com"
+GITHUB_API_URL = os.environ.get("GITHUB_API_URL", "https://api.github.com")
 GITLAB_API_URL = os.environ.get("GITLAB_API_URL", "http://gitlab.local/api/v4")
 
 def parse_args():

@@ -2,7 +2,6 @@ import os
 import subprocess
 from datetime import datetime, timedelta, timezone
 from .logger import log
-from .config import GITLAB_API_URL
 
 def needs_sync(repo, window_minutes):
     """
@@ -19,19 +18,17 @@ def needs_sync(repo, window_minutes):
     # Check if the difference is inside our window
     return (now - pushed_at) < timedelta(minutes=window_minutes)
 
-def sync_one_repo(repo, args, github_token, gitlab_token):
+def sync_one_repo(repo, args, source_provider, destination_provider=None):
     name = repo['name']
     repo_dir = os.path.join(args.storage, f"{name}.git")
     
     # 1. Construct Secure URLs (Injecting tokens)
-    # Note: We use the OAuth2 syntax for GitLab
-    gh_clone_url = repo['clone_url'].replace("https://", f"https://oauth2:{github_token}@")
+    # Use the provider to get the clone URL
+    gh_clone_url = source_provider.get_remote_url(repo)
     
-    # We assume the GitLab group matches the GitHub username or is defined in the URL
-    # For this script, we construct a generic target URL. 
-    # In a real scenario, you might want to customize the group logic.
-    if not args.backup_only:
-        gl_target_url = f"{GITLAB_API_URL.replace('/api/v4', '')}/{name}.git".replace("http://", f"http://oauth2:{gitlab_token}@")
+    # Use the provider to get the target URL if we are syncing to a destination
+    if not args.backup_only and destination_provider:
+        gl_target_url = destination_provider.get_remote_url(repo)
     else:
         gl_target_url = None
 

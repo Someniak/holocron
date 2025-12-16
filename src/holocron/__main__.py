@@ -5,15 +5,17 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Import from local modules
-from .config import parse_args, validate_config, __author__, __license__
+# Import from local modules
+from .config import parse_args, validate_config, __author__, __license__, GITLAB_API_URL, GITHUB_API_URL
 from .logger import log
-from .github_provider import get_github_repos
 from .mirror import needs_sync, sync_one_repo
 from .utils import handle_credits, print_storage_estimate
+from .providers.gitlab import GitLabProvider
+from .providers.github import GitHubProvider
 
-def run_sync_cycle(args, gh_token, gl_token, synced_pushes):
+def run_sync_cycle(args, source_provider, destination_provider, synced_pushes):
     """Executes one full synchronization cycle."""
-    repos = get_github_repos(gh_token, args.verbose)
+    repos = source_provider.fetch_repos(args.verbose)
     log(f"Found {len(repos)} repositories on GitHub.", is_verbose_mode=args.verbose)
     
     print_storage_estimate(repos, args)
@@ -36,7 +38,7 @@ def run_sync_cycle(args, gh_token, gl_token, synced_pushes):
                 if os.path.exists(repo_dir) and not needs_sync(repo, args.window):
                         continue
                 
-            future = executor.submit(sync_one_repo, repo, args, gh_token, gl_token)
+            future = executor.submit(sync_one_repo, repo, args, source_provider, destination_provider)
             future_to_repo[future] = repo
 
         for future in as_completed(future_to_repo):
@@ -56,6 +58,13 @@ def main():
     handle_credits(args)
     
     gh_token, gl_token = validate_config(args)
+    
+    # Initialize Providers
+    source_provider = GitHubProvider(gh_token, GITHUB_API_URL)
+    
+    destination_provider = None
+    if not args.backup_only:
+        destination_provider = GitLabProvider(GITLAB_API_URL, gl_token)
 
     log("Initializing Holocron...")
     if args.dry_run:
@@ -64,7 +73,7 @@ def main():
     synced_pushes = {}
 
     while True:
-        sync_count = run_sync_cycle(args, gh_token, gl_token, synced_pushes)
+        sync_count = run_sync_cycle(args, source_provider, destination_provider, synced_pushes)
 
         if sync_count > 0:
             log(f"Sync cycle complete. Updated {sync_count} repositories.")
