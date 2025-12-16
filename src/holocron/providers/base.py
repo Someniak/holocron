@@ -14,10 +14,10 @@ class Provider(ABC):
     """Abstract base class for all providers (Source or Destination)."""
 
     @abstractmethod
-    def fetch_repos(self, verbose: bool) -> list[Repository]:
+    def fetch_repos(self) -> list[Repository]:
         """
-        Fetches a list of repositories from the provider.
-        Returns a list of Repository objects.
+        Fetches the list of repositories from the provider.
+        Returns: A list of Repository objects.
         """
         pass
 

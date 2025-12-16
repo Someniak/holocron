@@ -1,7 +1,7 @@
 import os
 import subprocess
 from datetime import datetime, timedelta, timezone
-from .logger import log
+from .logger import logger, log_execution
 
 def needs_sync(repo, window_minutes):
     """
@@ -17,6 +17,7 @@ def needs_sync(repo, window_minutes):
     # Check if the difference is inside our window
     return (now - pushed_at) < timedelta(minutes=window_minutes)
 
+@log_execution
 def sync_one_repo(repo, args, source_provider, destination_provider=None):
     name = repo.name
     repo_dir = os.path.join(args.storage, f"{name}.git")
@@ -34,7 +35,7 @@ def sync_one_repo(repo, args, source_provider, destination_provider=None):
     # 2. Dry Run Check
     if args.dry_run:
         target_msg = gl_target_url if not args.backup_only else "(Local Backup Only)"
-        log(f"[DRY-RUN] Would sync '{name}' -> '{target_msg}'")
+        logger.info(f"[DRY-RUN] Would sync '{name}' -> '{target_msg}'")
         return
 
     # 3. Create Storage Directory if needed
@@ -48,7 +49,7 @@ def sync_one_repo(repo, args, source_provider, destination_provider=None):
         # A better approach is capture_output=True and log stderr on error.
         
         if not os.path.exists(repo_dir):
-            log(f"[{name}] Cloning new mirror...")
+            logger.info(f"[{name}] Cloning new mirror...")
             try:
                 subprocess.run(["git", "clone", "--mirror", "--quiet", gh_clone_url, repo_dir], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
             except subprocess.CalledProcessError as e:
@@ -57,7 +58,7 @@ def sync_one_repo(repo, args, source_provider, destination_provider=None):
                 raise subprocess.CalledProcessError(e.returncode, e.cmd, output=e.output, stderr=err_msg)
 
         else:
-            log(f"[{name}] Fetching updates...", verbose_only=True, is_verbose_mode=args.verbose)
+            logger.debug(f"[{name}] Fetching updates...")
             try:
                 subprocess.run(["git", "-C", repo_dir, "fetch", "--quiet", "-p", "origin"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
             except subprocess.CalledProcessError as e:
@@ -73,12 +74,12 @@ def sync_one_repo(repo, args, source_provider, destination_provider=None):
         if not args.backup_only:
             try:
                 subprocess.run(["git", "-C", repo_dir, "push", "--mirror", "--quiet"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-                log(f"[{name}] Successfully synced to GitLab.")
+                logger.info(f"[{name}] Successfully synced to GitLab.")
             except subprocess.CalledProcessError as e:
                 err_msg = e.stderr.decode().strip() if e.stderr else str(e)
                 raise subprocess.CalledProcessError(e.returncode, e.cmd, output=e.output, stderr=err_msg)
         else:
-            log(f"[{name}] Successfully backed up locally.")
+            logger.info(f"[{name}] Successfully backed up locally.")
         
         # 6. Optional Checkout (Sidecar)
         if args.checkout:
@@ -86,22 +87,22 @@ def sync_one_repo(repo, args, source_provider, destination_provider=None):
             checkout_dir = repo_dir.replace(".git", "")
             
             if not os.path.exists(checkout_dir):
-                log(f"[{name}] Creating checkout...", verbose_only=True, is_verbose_mode=args.verbose)
+                logger.debug(f"[{name}] Creating checkout...")
                 try:
                     # Clone from the local mirror
                     subprocess.run(["git", "clone", "--quiet", repo_dir, checkout_dir], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
                 except subprocess.CalledProcessError as e:
                     err_msg = e.stderr.decode().strip() if e.stderr else str(e)
-                    log(f"[{name}] Failed to create checkout: {err_msg}")
+                    logger.error(f"[{name}] Failed to create checkout: {err_msg}")
             else:
-                log(f"[{name}] Updating checkout...", verbose_only=True, is_verbose_mode=args.verbose)
+                logger.debug(f"[{name}] Updating checkout...")
                 try:
                     # We use pull to update the current branch. 
                     # If this fails (e.g. merge conflict, though unlikely for a backup), we catch it.
                     subprocess.run(["git", "-C", checkout_dir, "pull", "--quiet"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
                 except subprocess.CalledProcessError as e:
                     err_msg = e.stderr.decode().strip() if e.stderr else str(e)
-                    log(f"[{name}] Failed to update checkout: {err_msg}")
+                    logger.error(f"[{name}] Failed to update checkout: {err_msg}")
         
     except subprocess.CalledProcessError as e:
-        log(f"ERROR syncing {name}: {e}")
+        logger.error(f"ERROR syncing {name}: {e}")

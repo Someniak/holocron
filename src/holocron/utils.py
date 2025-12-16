@@ -1,6 +1,6 @@
 import sys
 from .config import __author__, __license__
-from .logger import log
+from .logger import logger
 
 def handle_credits(args):
     """Checks for --credits flag and exits if pre sent."""
@@ -21,11 +21,11 @@ def format_size(kb):
 def print_storage_estimate(repos, args):
     """Calculates and logs the estimated storage size."""
     total_kb = sum(repo.size for repo in repos)
-    log(f"Total remote size (compressed): {format_size(total_kb)}", is_verbose_mode=args.verbose)
+    logger.debug(f"Total remote size (compressed): {format_size(total_kb)}")
 
     if args.checkout:
         # Heuristic: 3x for checkout overhead (working dir + metadata)
         est_kb = total_kb * 3
-        log(f"Estimated local size (with checkout): ~{format_size(est_kb)}", is_verbose_mode=args.verbose)
+        logger.debug(f"Estimated local size (with checkout): ~{format_size(est_kb)}")
     else:
-        log("Note: Local bare repositories may be slightly larger than remote.", is_verbose_mode=args.verbose)
+        logger.debug("Note: Local bare repositories may be slightly larger than remote.")

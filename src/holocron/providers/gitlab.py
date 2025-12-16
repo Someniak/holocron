@@ -1,6 +1,6 @@
 import requests
 from datetime import datetime
-from ..logger import log
+from ..logger import logger, log_execution
 from .base import Provider, Repository
 
 class GitLabProvider(Provider):
@@ -8,52 +8,36 @@ class GitLabProvider(Provider):
         self.api_url = api_url
         self.token = token
 
-    def fetch_repos(self, verbose: bool) -> list[Repository]:
-        """Fetches all repositories from GitLab where the user is a member."""
-        headers = {'Authorization': f'Bearer {self.token}'}
+    @log_execution
+    def fetch_repos(self) -> list[Repository]:
+        """
+        Fetches repositories from GitLab (User + Groups).
+        """
+        headers = {'Private-Token': self.token}
         all_repos = []
-        page = 1
-        per_page = 100
-        
-        log("Fetching GitLab repositories...", is_verbose_mode=verbose)
-        
-        while True:
-            try:
-                # Use simple=true to get lighter objects, membership=true to get all repos user has access to
-                params = {
-                    'membership': 'true',
-                    'simple': 'true',
-                    'per_page': per_page,
-                    'page': page
-                }
-                
-                if verbose:
-                    log(f"DEBUG: Requesting page {page} from {self.api_url}/projects", verbose_only=True, is_verbose_mode=True)
+        seen_ids = set()
 
-                r = requests.get(f"{self.api_url}/projects", headers=headers, params=params, timeout=20)
-                r.raise_for_status()
-                
-                data = r.json()
-                if not data:
-                    break
-                
-                for item in data:
-                    repo = self._to_repository(item)
-                    all_repos.append(repo)
-                
-                # Check for next page header
-                if 'X-Next-Page' in r.headers and not r.headers['X-Next-Page']:
-                     break
-                if len(data) < per_page:
-                     break
-                     
-                page += 1
-            except Exception as e:
-                log(f"ERROR fetching GitLab repos: {e}")
-                break
-                
-        return all_repos
+        # 1. Fetch User Repos (and member projects)
+        user_repos = self._get_all_pages(
+            f"{self.api_url}/projects",
+            headers,
+            "GitLab projects (membership=true)",
+             query_params={
+                "membership": "true",
+                "simple": "true" 
+             }
+        )
         
+        for item in user_repos:
+             if item['id'] not in seen_ids:
+                all_repos.append(self._to_repository(item))
+                seen_ids.add(item['id'])
+        
+        # Note: GitLab's /projects?membership=true usually covers everything a user has access to, 
+        # including group projects. If strict group separation is needed, we'd query /groups.
+        
+        return all_repos
+
     def get_remote_url(self, repo: Repository) -> str:
         """
         Constructs the authenticated URL for pushing to GitLab.
@@ -71,7 +55,11 @@ class GitLabProvider(Provider):
                 # 2024-01-01T00:00:00.000Z
                 pushed_at = datetime.strptime(item['last_activity_at'].split('.')[0], "%Y-%m-%dT%H:%M:%S")
             except ValueError:
-                pass
+                # Try without microseconds if it fails
+                try:
+                    pushed_at = datetime.strptime(item['last_activity_at'], "%Y-%m-%dT%H:%M:%SZ")
+                except ValueError:
+                    pass
                 
         return Repository(
             name=item['path'], # Use path (slug) as name
@@ -79,3 +67,40 @@ class GitLabProvider(Provider):
             size=0, # Simple objects might not have stats, default to 0
             pushed_at=pushed_at
         )
+
+    def _get_all_pages(self, base_url, headers, context_name, query_params=None):
+        """Helper to fetch all pages from a GitLab endpoint."""
+        if query_params is None:
+            query_params = {}
+
+        items = []
+        page = 1
+        query_params['per_page'] = 100
+        
+        logger.debug(f"Fetching {context_name}...")
+        
+        while True:
+            try:
+                query_params['page'] = page
+                
+                logger.debug(f"Requesting page {page} from {base_url}...")
+
+                r = requests.get(base_url, headers=headers, params=query_params, timeout=20)
+                r.raise_for_status()
+                
+                data = r.json()
+                if not data:
+                    break
+                
+                count = len(data)
+                items.extend(data)
+                
+                # Check for pagination headers usually, but length check is robust enough for simple cases
+                if count < query_params['per_page']:
+                     break
+                
+                page += 1
+            except Exception as e:
+                logger.error(f"ERROR fetching {context_name}: {e}")
+                break
+        return items

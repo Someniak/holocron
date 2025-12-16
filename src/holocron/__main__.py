@@ -4,10 +4,10 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# Import from local modules
+
 # Import from local modules
 from .config import parse_args, validate_config, __author__, __license__, GITLAB_API_URL, GITHUB_API_URL
-from .logger import log
+from .logger import setup_logger, logger
 from .mirror import needs_sync, sync_one_repo
 from .utils import handle_credits, print_storage_estimate
 from .providers.gitlab import GitLabProvider
@@ -15,8 +15,9 @@ from .providers.github import GitHubProvider
 
 def run_sync_cycle(args, source_provider, destination_provider, synced_pushes):
     """Executes one full synchronization cycle."""
-    repos = source_provider.fetch_repos(args.verbose)
-    log(f"Found {len(repos)} repositories on GitHub.", is_verbose_mode=args.verbose)
+    # Verbosity is now handled globally, so we don't pass args.verbose
+    repos = source_provider.fetch_repos()
+    logger.debug(f"Found {len(repos)} repositories on GitHub.")
     
     print_storage_estimate(repos, args)
 
@@ -49,13 +50,16 @@ def run_sync_cycle(args, source_provider, destination_provider, synced_pushes):
                 if repo.pushed_at:
                     synced_pushes[repo.name] = repo.pushed_at
             except Exception as exc:
-                log(f"[{repo.name}] generated an exception: {exc}")
+                logger.error(f"[{repo.name}] generated an exception: {exc}")
     
     return sync_count
 
 def main():
     args = parse_args()
     handle_credits(args)
+    
+    # Initialize Logger Global Configuration
+    setup_logger(args.verbose)
     
     gh_token, gl_token = validate_config(args)
     
@@ -66,9 +70,9 @@ def main():
     if not args.backup_only:
         destination_provider = GitLabProvider(GITLAB_API_URL, gl_token)
 
-    log("Initializing Holocron...")
+    logger.info("Initializing Holocron...")
     if args.dry_run:
-        log("!!! DRY RUN MODE ACTIVE !!!")
+        logger.info("!!! DRY RUN MODE ACTIVE !!!")
 
     synced_pushes = {}
 
@@ -76,9 +80,9 @@ def main():
         sync_count = run_sync_cycle(args, source_provider, destination_provider, synced_pushes)
 
         if sync_count > 0:
-            log(f"Sync cycle complete. Updated {sync_count} repositories.")
-        elif args.verbose:
-            log("No changes detected in this cycle.")
+            logger.info(f"Sync cycle complete. Updated {sync_count} repositories.")
+        else:
+            logger.debug("No changes detected in this cycle.")
 
         if not args.watch:
             break
