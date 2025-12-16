@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - pre-release
+  pull_request:
+    branches:
+      - pre-release
 
 permissions:
   contents: write # Needed for creating releases and tags
@@ -37,7 +40,7 @@ jobs:
     name: Semantic Release (Prerelease)
     needs: test
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/prerelease'
+    if: github.ref == 'refs/heads/pre-release'
     steps:
       - uses: actions/checkout@v4
         with:
