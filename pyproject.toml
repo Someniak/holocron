@@ -33,10 +33,7 @@ testpaths = ["tests"]
 
 [tool.semantic_release]
 version_toml = ["pyproject.toml:project.version"]
-branches = [
-    "main",
-    { name = "prerelease", prerelease = true }
-]
+branches = { main = { match = "main" }, prerelease = { match = "pre-release", prerelease = true } }
 upload_to_pypi = false # We use the pypa/gh-action-pypi-publish action instead
 upload_to_release = true
 build_command = "uv build"
