@@ -3,7 +3,13 @@ import argparse
 from dotenv import load_dotenv
 
 # Load env vars from .env file
+# Load env vars from .env file
 load_dotenv()
+
+# --- METADATA ---
+__version__ = "0.1.0"
+__author__ = "Wouter Bloeyaert"
+__license__ = "MIT"
 
 # --- CONFIGURATION DEFAULTS ---
 # We use Environment Variables for security. 
@@ -21,6 +27,8 @@ def parse_args():
     )
     
     # Flags (True/False options)
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}", help="Show the version and exit")
+    parser.add_argument("--credits", action="store_true", help="Show the credits and exit")
     parser.add_argument("--dry-run", action="store_true", help="Simulate execution without making changes")
     parser.add_argument("--watch", action="store_true", help="Run continuously in a loop (Daemon mode)")
     parser.add_argument("--verbose", action="store_true", help="Print detailed logs")

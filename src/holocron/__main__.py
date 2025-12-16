@@ -5,13 +5,20 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Import from local modules
-from .config import parse_args
+# Import from local modules
+from .config import parse_args, __author__, __license__
 from .logger import log
 from .github_provider import get_github_repos
 from .mirror import needs_sync, sync_one_repo
 
 def main():
     args = parse_args()
+
+    if args.credits:
+        print(f"Holocron: The Ultimate Git Mirroring Tool")
+        print(f"Author: {__author__}")
+        print(f"License: {__license__}")
+        sys.exit(0)
     
     # Load secrets
     gh_token = os.environ.get("GITHUB_TOKEN")
