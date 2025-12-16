@@ -1,4 +1,5 @@
 import os
+import sys
 import argparse
 from dotenv import load_dotenv
 
@@ -42,3 +43,22 @@ def parse_args():
     parser.add_argument("--checkout", action="store_true", help="Create a checkout of the repository alongside the mirror")
 
     return parser.parse_args()
+
+def validate_config(args):
+    """
+    Validates environment variables and arguments.
+    Returns: (gh_token, gl_token)
+    """
+    gh_token = os.environ.get("GITHUB_TOKEN")
+    gl_token = os.environ.get("GITLAB_TOKEN")
+
+    if not gh_token:
+        print("CRITICAL: Missing GITHUB_TOKEN.")
+        sys.exit(1)
+
+    if not args.backup_only and not gl_token:
+        print("CRITICAL: Missing GITLAB_TOKEN.")
+        print("Please set GITLAB_TOKEN or use --backup-only.")
+        sys.exit(1)
+        
+    return gh_token, gl_token
