@@ -29,13 +29,28 @@
 
 ## Quick Start
 
-### 1. Docker (Recommended)
+### PyPI (pip / uv)
+Valuable for local usage or scripting.
+```bash
+pip install holocron-sync
+# or
+uv tool install holocron-sync
+```
+
+### Docker (Recommended)
+For continuous operation, pull the official image:
+```bash
+docker pull ghcr.io/someniak/holocron
+```
+
+Or run via Docker Compose:
 ```bash
 docker-compose up -d --build
 ```
 This starts Holocron in watch mode.
 
-### 2. Manual Run
+
+## Manual Run
 ```bash
 # Install dependencies
 uv sync
