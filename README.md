@@ -16,7 +16,7 @@
           \/
 ```
 
-**Holocron** is a powerful Python application designed to mirror your GitHub repositories to a local directory or a self-hosted GitLab instance. It supports parallel syncing, continuous watch mode, and local-only backups (no GitLab required). Ideal is you need a local backup for whatever reason.
+**Holocron** is a powerful Python application designed to mirror your GitHub repositories to a local directory or a self-hosted GitLab instance. It supports parallel syncing, continuous watch mode, and local-only backups (no GitLab required). Ideal is you need a local backup for whatever reason. TEST
 
 
 
