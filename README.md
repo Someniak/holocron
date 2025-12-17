@@ -1,4 +1,5 @@
 # Holocron
+<!-- trigger: 1.0.0 -->
 > **The "Ultimate" Git Mirroring Tool**
 
 
