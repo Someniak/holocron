@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from typing import Optional
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -8,7 +9,7 @@ class Repository:
     name: str
     clone_url: str
     size: int = 0  # in KB
-    pushed_at: datetime | None = None
+    pushed_at: Optional[datetime] = None
 
 class Provider(ABC):
     """Abstract base class for all providers (Source or Destination)."""

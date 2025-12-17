@@ -99,7 +99,14 @@ Holocron uses environment variables for secrets:
 | `--verbose` | False | Enable detailed debug logging |
 
 ## Development
-Run tests with coverage:
+
+### Running Tests
+To run the test suite:
+```bash
+uv run pytest
+```
+
+With coverage:
 ```bash
 uv run pytest --cov=src
 ```
