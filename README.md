@@ -1,6 +1,7 @@
 # Holocron
 > **The "Ultimate" Git Mirroring Tool**
 
+
 ```
           /\
          /  \
@@ -16,9 +17,7 @@
           \/
 ```
 
-**Holocron** is a powerful Python application designed to mirror your GitHub repositories to a local directory or a self-hosted GitLab instance. It supports parallel syncing, continuous watch mode, and local-only backups (no GitLab required). Ideal is you need a local backup for whatever reason.   TEST
-
-
+**Holocron** is a powerful Python application designed to mirror your GitHub repositories to a local directory or a self-hosted GitLab instance. It supports parallel syncing, continuous watch mode, and local-only backups (no GitLab required). Ideal if you need a local backup for any reason. 
 
 ## Features
 - **Parallel Syncing**: Sync multiple repositories concurrently for maximum speed.
@@ -39,22 +38,22 @@ pip install holocron-sync
 uv tool install holocron-sync
 ```
 
-### Docker (Recommended)
-For continuous operation, pull the official image:
+
+
+### Docker (Recommended for continuous operation)
+Run Holocron instantly with a single command:
+
 ```bash
-docker pull ghcr.io/someniak/holocron
+docker run -d \
+  -e GITHUB_TOKEN="your_github_token" \
+  -v $(pwd)/mirror-data:/app/mirror-data \
+  ghcr.io/someniak/holocron
 ```
 
-See the [Docker Guide](DOCKER_GUIDE.md) for advanced configuration and full environment variable reference.
-
-Or run via Docker Compose:
-```bash
-docker-compose up -d --build
-```
-This starts Holocron in watch mode.
+For full configuration options, environment variables, and Docker Compose examples, please refer to the **[Docker Guide](DOCKER_GUIDE.md)**.
 
 
-## Manual Run
+## Running from Source
 ```bash
 # Install dependencies
 uv sync
