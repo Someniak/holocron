@@ -17,6 +17,7 @@ __license__ = "MIT"
 # Never hardcode passwords in open source code!
 GITHUB_API_URL = os.environ.get("GITHUB_API_URL", "https://api.github.com")
 GITLAB_API_URL = os.environ.get("GITLAB_API_URL", "http://gitlab.local/api/v4")
+GITLAB_NAMESPACE = os.environ.get("GITLAB_NAMESPACE")
 
 def parse_args():
     """
@@ -45,6 +46,7 @@ def parse_args():
     parser.add_argument("--concurrency", type=int, default=5, help="Number of concurrent sync threads (default: 5)")
     parser.add_argument("--backup-only", action="store_true", help="Mirror locally only, skip pushing to destination")
     parser.add_argument("--checkout", action="store_true", help="Create a checkout of the repository alongside the mirror")
+    parser.add_argument("--gitlab-namespace", type=str, default=GITLAB_NAMESPACE, help="GitLab namespace (User or Group) to push to")
 
     return parser.parse_args()
 

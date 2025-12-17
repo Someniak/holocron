@@ -69,7 +69,8 @@ Holocron uses environment variables for secrets:
  | :--- | :--- | :--- |
  | `GITHUB_TOKEN` | Your GitHub Personal Access Token (repo scope) | **Yes** |
  | `GITLAB_TOKEN` | Your GitLab Personal Access Token (api scope) | No (if `--backup-only`) |
- | `GITLAB_API_URL` | URL to your GitLab API (default: `http://gitlab.local/api/v4`) | No |
+ | `GITLAB_API_URL` | URL to your GitLab API (default: `http://gitlab.local/api/v4`) | No (if `--backup-only`) |
+ | `GITHUB_API_URL` | URL to your GitHub API (default: `https://api.github.com`) | No |
  
  ### API Permissions
  Ensure your tokens have the minimum required scopes:

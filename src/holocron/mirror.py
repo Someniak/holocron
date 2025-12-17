@@ -50,7 +50,7 @@ def sync_one_repo(repo, storage_path, dry_run=False, backup_only=False, checkout
             _update_sidecar_checkout(repo, repo_dir)
         
     except subprocess.CalledProcessError as e:
-        logger.error(f"ERROR syncing {repo.name}: {e}")
+        logger.error(f"ERROR syncing {repo.name}: {e}\nOutput: {e.stderr}")
 
 def _ensure_local_mirror(repo, repo_dir, source_url):
     """Clones or fetches the local bare mirror."""

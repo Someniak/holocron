@@ -74,12 +74,12 @@ def run_sync_cycle(config: dict, source_provider, destination_provider, synced_p
     return sync_count
 
 
-def get_provider(name, token, api_url_github, api_url_gitlab):
+def get_provider(name, token, api_url_github, api_url_gitlab, namespace=None):
     """Factory to get the correct provider instance."""
     if name == "github":
         return GitHubProvider(token, api_url_github)
     elif name == "gitlab":
-        return GitLabProvider(api_url_gitlab, token)
+        return GitLabProvider(api_url_gitlab, token, namespace)
     else:
         raise ValueError(f"Unknown provider: {name}")
 
@@ -107,7 +107,8 @@ def main():
         args.source, 
         get_token_for(args.source), 
         GITHUB_API_URL, 
-        GITLAB_API_URL
+        GITLAB_API_URL,
+        namespace=args.gitlab_namespace
     )
     
     destination_provider = None
@@ -116,7 +117,8 @@ def main():
             args.destination,
             get_token_for(args.destination),
             GITHUB_API_URL,
-            GITLAB_API_URL
+            GITLAB_API_URL,
+            namespace=args.gitlab_namespace
         )
 
     logger.info("Initializing Holocron...")

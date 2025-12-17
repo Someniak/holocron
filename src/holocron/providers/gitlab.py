@@ -4,9 +4,10 @@ from ..logger import logger, log_execution
 from .base import Provider, Repository
 
 class GitLabProvider(Provider):
-    def __init__(self, api_url, token):
+    def __init__(self, api_url, token, namespace=None):
         self.api_url = api_url
         self.token = token
+        self.namespace = namespace
 
     @log_execution
     def fetch_repos(self) -> list[Repository]:
@@ -44,8 +45,26 @@ class GitLabProvider(Provider):
         """
         # The logic removes '/api/v4' from the user-provided API URL to get the base URL
         # and injects the OAuth2 token.
-        base_url = self.api_url.replace('/api/v4', '')
-        return f"{base_url}/{repo.name}.git".replace("http://", f"http://oauth2:{self.token}@")
+        # The logic removes '/api/v4' from the user-provided API URL to get the base URL
+        # and injects the OAuth2 token.
+        base_url = self.api_url.rstrip('/')
+        if base_url.endswith('/api/v4'):
+            base_url = base_url[:-7]
+        base_url = base_url.rstrip('/')
+
+        url = f"{base_url}/{repo.name}.git"
+
+        if self.namespace:
+            # Inject namespace (group/user) between base_url and repo_name
+            url = f"{base_url}/{self.namespace}/{repo.name}.git"
+
+        if self.token:
+            if url.startswith("https://"):
+                return url.replace("https://", f"https://oauth2:{self.token}@", 1)
+            elif url.startswith("http://"):
+                return url.replace("http://", f"http://oauth2:{self.token}@", 1)
+        
+        return url
 
     def _to_repository(self, item: dict) -> Repository:
         """Helper to convert GitLab API dict to Repository object."""
