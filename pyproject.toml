@@ -1,6 +1,6 @@
 [project]
 name = "holocron-sync"
-version = "0.2.0"
+version = "1.0.0"
 description = "Holocron: The Ultimate Git Mirroring Tool"
 readme = "README.md"
 requires-python = ">=3.9"

@@ -1,7 +1,31 @@
 # CHANGELOG
 
 
+## v1.0.0 (2025-12-17)
+
+### Documentation
+
+- Improve README with clearer Docker run instructions and minor text corrections.
+  ([`38fc23a`](https://github.com/Someniak/holocron/commit/38fc23a86f91f818fb262d6f9b88f1f58792cbd4))
+
+### Features
+
+- Final cleanups for 1.0.0 release
+  ([`40eee68`](https://github.com/Someniak/holocron/commit/40eee6861b7f3d9fddbc96a899763e7b80cb0022))
+
+BREAKING CHANGE: Transitioning to 1.0.0 stable release.
+
+### BREAKING CHANGES
+
+- Transitioning to 1.0.0 stable release.
+
+
 ## v0.2.0 (2025-12-17)
+
+### Chores
+
+- **release**: 0.2.0 [skip ci]
+  ([`d472752`](https://github.com/Someniak/holocron/commit/d47275235a591be80334b172b4a9d596203f8eac))
 
 ### Features
 
