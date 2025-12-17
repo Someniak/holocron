@@ -45,6 +45,8 @@ For continuous operation, pull the official image:
 docker pull ghcr.io/someniak/holocron
 ```
 
+See the [Docker Guide](DOCKER_GUIDE.md) for advanced configuration and full environment variable reference.
+
 Or run via Docker Compose:
 ```bash
 docker-compose up -d --build
@@ -64,12 +66,24 @@ uv run python src/holocron.py --backup-only --checkout --concurrency 10
 
 ## Configuration
 Holocron uses environment variables for secrets:
-
-| Variable | Description | Required | 
-| :--- | :--- | :--- |
-| `GITHUB_TOKEN` | Your GitHub Personal Access Token (repo scope) | **Yes** |
-| `GITLAB_TOKEN` | Your GitLab Personal Access Token (api scope) | No (if `--backup-only`) |
-| `GITLAB_API_URL` | URL to your GitLab API (default: `http://gitlab.local/api/v4`) | No |
+ 
+ | Variable | Description | Required | 
+ | :--- | :--- | :--- |
+ | `GITHUB_TOKEN` | Your GitHub Personal Access Token (repo scope) | **Yes** |
+ | `GITLAB_TOKEN` | Your GitLab Personal Access Token (api scope) | No (if `--backup-only`) |
+ | `GITLAB_API_URL` | URL to your GitLab API (default: `http://gitlab.local/api/v4`) | No (if `--backup-only`) |
+ | `GITHUB_API_URL` | URL to your GitHub API (default: `https://api.github.com`) | No |
+ 
+ ### API Permissions
+ Ensure your tokens have the minimum required scopes:
+ 
+ **GitHub Token (`GITHUB_TOKEN`)**
+ - `repo` (Full control of private repositories) - *Required for reading private repos*
+ - `read:org` (Read org and team membership) - *Required for fetching organization repos*
+ 
+ **GitLab Token (`GITLAB_TOKEN`)**
+ - `api` (Grants complete read/write access to the API) - *Simplest option*
+ - OR `read_repository` + `write_repository` - *More granular control*
 
 ### Command Line Arguments
 | Flag | Default | Description |
@@ -85,7 +99,14 @@ Holocron uses environment variables for secrets:
 | `--verbose` | False | Enable detailed debug logging |
 
 ## Development
-Run tests with coverage:
+
+### Running Tests
+To run the test suite:
+```bash
+uv run pytest
+```
+
+With coverage:
 ```bash
 uv run pytest --cov=src
 ```

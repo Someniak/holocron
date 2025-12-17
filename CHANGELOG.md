@@ -2,7 +2,6 @@
 
 
 ## v0.1.0 (2025-12-16)
-
 ### Bug Fixes
 
 - Rename workflow to match PyPI config

@@ -38,4 +38,5 @@ upload_to_pypi = false # We use the pypa/gh-action-pypi-publish action instead
 upload_to_release = true
 build_command = "pip install uv && uv build"
 commit_message = "chore(release): {version} [skip ci]"
-major_on_zero = false
+major_on_zero = true
+version_variables = ["src/holocron/config.py:__version__"]
