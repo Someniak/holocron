@@ -45,6 +45,8 @@ For continuous operation, pull the official image:
 docker pull ghcr.io/someniak/holocron
 ```
 
+See the [Docker Guide](DOCKER_GUIDE.md) for advanced configuration and full environment variable reference.
+
 Or run via Docker Compose:
 ```bash
 docker-compose up -d --build
