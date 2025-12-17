@@ -18,35 +18,35 @@ def needs_sync(repo, window_minutes):
     return (now - pushed_at) < timedelta(minutes=window_minutes)
 
 @log_execution
-def sync_one_repo(repo, args, source_provider, destination_provider=None):
-    repo_dir = os.path.join(args.storage, f"{repo.name}.git")
+def sync_one_repo(repo, storage_path, dry_run=False, backup_only=False, checkout=False, source_provider=None, destination_provider=None):
+    repo_dir = os.path.join(storage_path, f"{repo.name}.git")
     
     # 1. Construct Secure URLs
     source_url = source_provider.get_remote_url(repo)
     
     destination_url = None
-    if not args.backup_only and destination_provider:
+    if not backup_only and destination_provider:
         destination_url = destination_provider.get_remote_url(repo)
 
     # 2. Dry Run Check
-    if args.dry_run:
-        target_msg = destination_url if not args.backup_only else "(Local Backup Only)"
+    if dry_run:
+        target_msg = destination_url if not backup_only else "(Local Backup Only)"
         logger.info(f"[DRY-RUN] Would sync '{repo.name}' -> '{target_msg}'")
         return
 
     # 3. Create Storage Directory if needed
-    os.makedirs(args.storage, exist_ok=True)
+    os.makedirs(storage_path, exist_ok=True)
 
     # 4. Execute Sync Steps
     try:
         _ensure_local_mirror(repo, repo_dir, source_url)
         
-        if not args.backup_only:
+        if not backup_only:
              _push_to_destination(repo, repo_dir, destination_url)
         else:
             logger.info(f"[{repo.name}] Successfully backed up locally.")
         
-        if args.checkout:
+        if checkout:
             _update_sidecar_checkout(repo, repo_dir)
         
     except subprocess.CalledProcessError as e:

@@ -44,7 +44,7 @@ def parse_args():
 
     return parser.parse_args()
 
-def validate_config(args):
+def validate_config(backup_only=False):
     """
     Validates environment variables and arguments.
     Returns: (gh_token, gl_token)
@@ -56,7 +56,7 @@ def validate_config(args):
         print("CRITICAL: Missing GITHUB_TOKEN.")
         sys.exit(1)
 
-    if not args.backup_only and not gl_token:
+    if not backup_only and not gl_token:
         print("CRITICAL: Missing GITLAB_TOKEN.")
         print("Please set GITLAB_TOKEN or use --backup-only.")
         sys.exit(1)

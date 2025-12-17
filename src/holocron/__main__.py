@@ -7,39 +7,58 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Import from local modules
 from .config import parse_args, validate_config, __author__, __license__, GITLAB_API_URL, GITHUB_API_URL
-from .logger import setup_logger, logger
+from .logger import setup_logger, logger, log_execution
 from .mirror import needs_sync, sync_one_repo
 from .utils import handle_credits, print_storage_estimate
 from .providers.gitlab import GitLabProvider
 from .providers.github import GitHubProvider
 
-def run_sync_cycle(args, source_provider, destination_provider, synced_pushes):
+@log_execution
+def run_sync_cycle(config: dict, source_provider, destination_provider, synced_pushes):
     """Executes one full synchronization cycle."""
-    # Verbosity is now handled globally, so we don't pass args.verbose
+    # Unpack config
+    concurrency = config['concurrency']
+    storage = config['storage']
+    watch = config['watch']
+    window = config['window']
+    backup_only = config['backup_only']
+    dry_run = config['dry_run']
+    checkout = config['checkout']
+
     repos = source_provider.fetch_repos()
     logger.debug(f"Found {len(repos)} repositories on GitHub.")
     
-    print_storage_estimate(repos, args)
+    print_storage_estimate(repos, checkout_mode=checkout)
 
     sync_count = 0
-    with ThreadPoolExecutor(max_workers=args.concurrency) as executor:
+    with ThreadPoolExecutor(max_workers=concurrency) as executor:
         future_to_repo = {}
         for repo in repos:
             repo_name = repo.name
             pushed_at = repo.pushed_at
-            repo_dir = os.path.join(args.storage, f"{repo_name}.git")
+            repo_dir = os.path.join(storage, f"{repo_name}.git")
 
             # Smart filtering
-            if args.watch:
+            if watch:
                 # 1. Skip if already synced this exact push
                 if repo_name in synced_pushes and synced_pushes[repo_name] == pushed_at:
                     continue
                 
                 # 2. Check time window (SKIP if old AND local repo exists)
-                if os.path.exists(repo_dir) and not needs_sync(repo, args.window):
+                if os.path.exists(repo_dir) and not needs_sync(repo, window):
                         continue
-                
-            future = executor.submit(sync_one_repo, repo, args, source_provider, destination_provider)
+            
+            # Pass explicit params to sync_one_repo
+            future = executor.submit(
+                sync_one_repo, 
+                repo=repo, 
+                storage_path=storage, 
+                dry_run=dry_run, 
+                backup_only=backup_only,
+                checkout=checkout,
+                source_provider=source_provider, 
+                destination_provider=destination_provider
+            )
             future_to_repo[future] = repo
 
         for future in as_completed(future_to_repo):
@@ -56,12 +75,12 @@ def run_sync_cycle(args, source_provider, destination_provider, synced_pushes):
 
 def main():
     args = parse_args()
-    handle_credits(args)
+    handle_credits(args.credits)
     
     # Initialize Logger Global Configuration
     setup_logger(args.verbose)
     
-    gh_token, gl_token = validate_config(args)
+    gh_token, gl_token = validate_config(args.backup_only)
     
     # Initialize Providers
     source_provider = GitHubProvider(gh_token, GITHUB_API_URL)
@@ -75,9 +94,13 @@ def main():
         logger.info("!!! DRY RUN MODE ACTIVE !!!")
 
     synced_pushes = {}
+    
+    # Convert args to a dict (or Config object) for easier passing to cycle runner
+    # We could also pass args directly but we want to decouple run_sync_cycle from argparse
+    config = vars(args)
 
     while True:
-        sync_count = run_sync_cycle(args, source_provider, destination_provider, synced_pushes)
+        sync_count = run_sync_cycle(config, source_provider, destination_provider, synced_pushes)
 
         if sync_count > 0:
             logger.info(f"Sync cycle complete. Updated {sync_count} repositories.")
