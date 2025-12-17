@@ -34,17 +34,21 @@ def parse_args():
     parser.add_argument("--watch", action="store_true", help="Run continuously in a loop (Daemon mode)")
     parser.add_argument("--verbose", action="store_true", help="Print detailed logs")
     
+    # Provider Selection
+    parser.add_argument("--source", type=str, choices=["github", "gitlab"], default="github", help="Source provider (default: github)")
+    parser.add_argument("--destination", type=str, choices=["github", "gitlab", "local"], default="gitlab", help="Destination provider (default: gitlab)")
+
     # value options
     parser.add_argument("--interval", type=int, default=60, help="Seconds to wait between checks (default: 60)")
     parser.add_argument("--window", type=int, default=10, help="Only sync repos updated in the last X minutes")
     parser.add_argument("--storage", type=str, default="./mirror-data", help="Local path to store git repositories")
     parser.add_argument("--concurrency", type=int, default=5, help="Number of concurrent sync threads (default: 5)")
-    parser.add_argument("--backup-only", action="store_true", help="Mirror locally only, skip pushing to GitLab")
+    parser.add_argument("--backup-only", action="store_true", help="Mirror locally only, skip pushing to destination")
     parser.add_argument("--checkout", action="store_true", help="Create a checkout of the repository alongside the mirror")
 
     return parser.parse_args()
 
-def validate_config(backup_only=False):
+def validate_config(source, destination, backup_only=False):
     """
     Validates environment variables and arguments.
     Returns: (gh_token, gl_token)
@@ -52,13 +56,22 @@ def validate_config(backup_only=False):
     gh_token = os.environ.get("GITHUB_TOKEN")
     gl_token = os.environ.get("GITLAB_TOKEN")
 
-    if not gh_token:
-        print("CRITICAL: Missing GITHUB_TOKEN.")
+    # Check source requirements
+    if source == "github" and not gh_token:
+        print("CRITICAL: Missing GITHUB_TOKEN (required for Source: GitHub).")
+        sys.exit(1)
+    if source == "gitlab" and not gl_token:
+        print("CRITICAL: Missing GITLAB_TOKEN (required for Source: GitLab).")
         sys.exit(1)
 
-    if not backup_only and not gl_token:
-        print("CRITICAL: Missing GITLAB_TOKEN.")
-        print("Please set GITLAB_TOKEN or use --backup-only.")
-        sys.exit(1)
+    # Check destination requirements
+    if not backup_only:
+        if destination == "github" and not gh_token:
+            print("CRITICAL: Missing GITHUB_TOKEN (required for Destination: GitHub).")
+            sys.exit(1)
+        if destination == "gitlab" and not gl_token:
+            print("CRITICAL: Missing GITLAB_TOKEN (required for Destination: GitLab).")
+            print("Please set GITLAB_TOKEN or use --backup-only.")
+            sys.exit(1)
         
     return gh_token, gl_token

@@ -73,21 +73,51 @@ def run_sync_cycle(config: dict, source_provider, destination_provider, synced_p
     
     return sync_count
 
+
+def get_provider(name, token, api_url_github, api_url_gitlab):
+    """Factory to get the correct provider instance."""
+    if name == "github":
+        return GitHubProvider(token, api_url_github)
+    elif name == "gitlab":
+        return GitLabProvider(api_url_gitlab, token)
+    else:
+        raise ValueError(f"Unknown provider: {name}")
+
 def main():
     args = parse_args()
     handle_credits(args.credits)
     
     # Initialize Logger Global Configuration
     setup_logger(args.verbose)
+
+    # Handle 'local' destination alias
+    if args.destination == "local":
+        args.backup_only = True
     
-    gh_token, gl_token = validate_config(args.backup_only)
+    gh_token, gl_token = validate_config(args.source, args.destination, args.backup_only)
     
+    # helper for tokens
+    def get_token_for(p_name):
+        return gh_token if p_name == "github" else gl_token
+        
     # Initialize Providers
-    source_provider = GitHubProvider(gh_token, GITHUB_API_URL)
+    logger.debug(f"Source: {args.source}, Destination: {args.destination}")
+
+    source_provider = get_provider(
+        args.source, 
+        get_token_for(args.source), 
+        GITHUB_API_URL, 
+        GITLAB_API_URL
+    )
     
     destination_provider = None
     if not args.backup_only:
-        destination_provider = GitLabProvider(GITLAB_API_URL, gl_token)
+        destination_provider = get_provider(
+            args.destination,
+            get_token_for(args.destination),
+            GITHUB_API_URL,
+            GITLAB_API_URL
+        )
 
     logger.info("Initializing Holocron...")
     if args.dry_run:
