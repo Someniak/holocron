@@ -1,7 +1,53 @@
 # CHANGELOG
 
 
+## v0.2.0 (2025-12-17)
+
+### Features
+
+- Add CLI options for version and credits display, and delete docker-compose.yml.
+  ([`fe3bfe1`](https://github.com/Someniak/holocron/commit/fe3bfe1c5b3d2ad26f39c9d71a9c1195f4872b5b))
+
+- Add comprehensive Docker usage guide and enhance environment variable parsing for configuration.
+  ([`9f8ccda`](https://github.com/Someniak/holocron/commit/9f8ccda91acb569df066922c163677a5e5a861e4))
+
+- Add GitLab namespace support, configurable GitHub API URL, and improve GitLab clone URL
+  generation.
+  ([`180cc44`](https://github.com/Someniak/holocron/commit/180cc44998f48e6f34d6fedf1b3ac7ae9643dfdb))
+
+- Add utility functions for credits and storage estimation, and remove contribution guidelines.
+  ([`1ce23d1`](https://github.com/Someniak/holocron/commit/1ce23d185e9458be01cbd4c895983201e1ef26eb))
+
+- Implement dynamic source and destination provider selection with new CLI arguments and updated
+  provider initialization.
+  ([`cd79758`](https://github.com/Someniak/holocron/commit/cd79758f32521f0abebf15f61ba50078f2e38d93))
+
+- Introduce a pluggable provider architecture, migrating GitHub logic and adding GitLab support.
+  ([`870e964`](https://github.com/Someniak/holocron/commit/870e9640d5de028a36be4a2e41f2dd0740f4fd01))
+
+### Refactoring
+
+- Encapsulate GitHub provider logic into a class, update `Repository` type hint, and enhance test
+  instructions in README.
+  ([`7c56a05`](https://github.com/Someniak/holocron/commit/7c56a05771f42db1bd9127c5d7ee0c7a4f00cb74))
+
+- Extract git operations into private helper functions `_ensure_local_mirror` and
+  `_push_to_destination` within `sync_one_repo`.
+  ([`aa0ea5c`](https://github.com/Someniak/holocron/commit/aa0ea5ce042e1bbdcc28c18a40feb41250819510))
+
+- Replace verbose parameter with structured logger and execution decorator in provider methods.
+  ([`da75922`](https://github.com/Someniak/holocron/commit/da7592281fd1cc3405af3392074bb6c5bbb78d59))
+
+- Standardize repository data handling with a new Repository dataclass and update API token
+  permission documentation.
+  ([`406ba0f`](https://github.com/Someniak/holocron/commit/406ba0f8e5f75cf61991950870bb996f13481c85))
+
+- Update function signatures to accept explicit parameters instead of the full `args` object.
+  ([`58a8829`](https://github.com/Someniak/holocron/commit/58a8829de9f194e590b46602f94081c49968ec67))
+
+
 ## v0.1.0 (2025-12-16)
+
 ### Bug Fixes
 
 - Rename workflow to match PyPI config
@@ -29,6 +75,9 @@
 
 - Update project dependencies and metadata.
   ([`818c3d2`](https://github.com/Someniak/holocron/commit/818c3d285b205294eb5df34bb7c1f26a6c0a5d27))
+
+- **release**: 0.1.0 [skip ci]
+  ([`6dac879`](https://github.com/Someniak/holocron/commit/6dac879061b437c88cd8bbd3a03e6fe5d2ba5bd5))
 
 ### Documentation
 
