@@ -110,3 +110,14 @@ With coverage:
 ```bash
 uv run pytest --cov=src
 ```
+
+## Release Process
+
+Holocron uses a manually triggered release workflow:
+
+1.  **Prepare Release**: Go to Actions -> **Prepare Release** and run it with the new version (e.g., `1.2.0`). This creates a `release/v1.2.0` branch.
+2.  **Verify**: Ensure CI passes on the release branch.
+3.  **Publish**: Create and push a tag `v1.2.0` (or merge the release PR and tag main).
+    - `git tag v1.2.0`
+    - `git push origin v1.2.0`
+    - This triggers Docker and PyPI publishing.
