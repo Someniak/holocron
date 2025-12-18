@@ -41,7 +41,7 @@ jobs:
           git add pyproject.toml
           git add src/holocron/config.py || true
           git commit -m "chore(release): bump version to ${{ inputs.version }}"
-          git push origin release/v${{ inputs.version }}
+          git push --force origin release/v${{ inputs.version }}
 
       - name: Create Pull Request
         run: |
