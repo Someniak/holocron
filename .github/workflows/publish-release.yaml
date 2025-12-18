@@ -1,0 +1,68 @@
+name: Publish Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to tag (e.g. 1.2.0)"
+        required: true
+        type: string
+      prerelease:
+        description: "Is this a pre-release?"
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  publish-release:
+    name: Tag and Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: "release/v${{ inputs.version }}"
+          fetch-depth: 0
+
+      - name: Validate Version
+        run: |
+          # Extract version from pyproject.toml
+          CURRENT_VERSION=$(grep '^version =' pyproject.toml | cut -d '"' -f 2)
+          INPUT_VERSION="${{ inputs.version }}"
+
+          echo "Current pyproject.toml version: $CURRENT_VERSION"
+          echo "Input version: $INPUT_VERSION"
+
+          if [ "$CURRENT_VERSION" != "$INPUT_VERSION" ]; then
+            echo "::error::Version mismatch! pyproject.toml says '$CURRENT_VERSION' but you requested '$INPUT_VERSION'. Please update pyproject.toml first."
+            exit 1
+          fi
+
+      - name: Configure Git User
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Create and Push Tag
+        run: |
+          VERSION="${{ inputs.version }}"
+          TAG="v$VERSION"
+
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "::error::Tag $TAG already exists!"
+            exit 1
+          fi
+
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin "$TAG"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "v${{ inputs.version }}"
+          name: "v${{ inputs.version }}"
+          prerelease: ${{ inputs.prerelease }}
+          generate_release_notes: true
+          draft: false
