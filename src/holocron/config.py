@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # --- METADATA ---
-__version__ = "1.1.0"
+__version__ = "1.1.2"
 __author__ = "Wouter Bloeyaert"
 __license__ = "MIT"
 
