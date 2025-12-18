@@ -1,7 +1,20 @@
 # CHANGELOG
 
 
+## v1.1.0 (2025-12-18)
+
+### Features
+
+- Add multi-platform build support and caching to Docker publish workflow
+  ([`0151054`](https://github.com/Someniak/holocron/commit/0151054f3b123d8b008e5ef76a6201e7defc3471))
+
+
 ## v1.0.0 (2025-12-17)
+
+### Chores
+
+- **release**: 1.0.0 [skip ci]
+  ([`e9d4de6`](https://github.com/Someniak/holocron/commit/e9d4de66b12521511ac963cafa5f91a4da307968))
 
 ### Documentation
 
