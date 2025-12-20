@@ -46,11 +46,24 @@ Once the release branch is verified:
     *(Alternatively, you can tag the release-branch commit directly if you prefer, but merging to main first is standard).*
 
 **What this does:**
-*   Pushing the tag `v*` triggers the **Publish** workflows.
-*   **Docker Image**: Built and pushed to GHCR (`ghcr.io/someniak/holocron:1.2.0` and `latest`).
-*   **PyPI**: Build and published to PyPI.
+*   Checks that the version matches `pyproject.toml`.
+*   Creates and pushes the git tag `v1.2.0`.
+*   Creates a GitHub Release.
+*   Triggers the build and publish steps for:
+    *   **Docker Image**: Pushes to GHCR (`ghcr.io/someniak/holocron:1.2.0` and `latest`).
+    *   **PyPI**: Publishes the package to PyPI.
+
+### Pro-Tip: Release Candidates
+If you entered a pre-release version (e.g., `1.2.0rc1`) in the **Prepare Release** step:
+1.  The system detects it as a pre-release.
+2.  Docker images are pushed *without* the `latest` tag.
+3.  The GitHub Release is marked as "Pre-release".
+
+**To promote to final:**
+Simply run the **Prepare Release** workflow again with the final version (e.g., `1.2.0`). This will bump the version from `rc1` to final, create a new PR, and once merged, you can run **Publish Release**.
 
 ### 5. Automated Release Notes
 We use `release-drafter` to keep track of changes.
 *   As PRs are merged to `main`, a draft release is continuously updated on GitHub.
-*   When you push the tag, you simply need to edit the drafted release on GitHub and publish it.
+*   The **Publish Release** workflow will attach these notes to the final release.
+
