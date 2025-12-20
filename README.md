@@ -78,7 +78,7 @@ Holocron uses environment variables for secrets:
  Ensure your tokens have the minimum required scopes:
  
  **GitHub Token (`GITHUB_TOKEN`)**
- - `repo` (Full control of private repositories) - *Required for reading private repos*
+ - `repo` (Full control of private repositories) - *Required for reading private repos and modifying branch protection*
  - `read:org` (Read org and team membership) - *Required for fetching organization repos*
  
  **GitLab Token (`GITLAB_TOKEN`)**
