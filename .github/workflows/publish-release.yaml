@@ -7,16 +7,13 @@ on:
         description: "Version to tag (e.g. 1.2.0)"
         required: true
         type: string
-      prerelease:
-        description: "Is this a pre-release?"
-        required: false
-        type: boolean
-        default: false
 
 jobs:
   publish-release:
     name: Tag and Release
     runs-on: ubuntu-latest
+    outputs:
+      is_prerelease: ${{ steps.check_prerelease.outputs.is_prerelease }}
     permissions:
       contents: write
     steps:
@@ -38,6 +35,17 @@ jobs:
           if [ "$CURRENT_VERSION" != "$INPUT_VERSION" ]; then
             echo "::error::Version mismatch! pyproject.toml says '$CURRENT_VERSION' but you requested '$INPUT_VERSION'. Please update pyproject.toml first."
             exit 1
+          fi
+
+      - name: Detect Pre-release
+        id: check_prerelease
+        run: |
+          if [[ "${{ inputs.version }}" =~ [a-zA-Z] ]]; then
+            echo "is_prerelease=true" >> $GITHUB_OUTPUT
+            echo "Pre-release detected: yes"
+          else
+            echo "is_prerelease=false" >> $GITHUB_OUTPUT
+            echo "Pre-release detected: no"
           fi
 
       - name: Configure Git User
@@ -63,6 +71,27 @@ jobs:
         with:
           tag_name: "v${{ inputs.version }}"
           name: "v${{ inputs.version }}"
-          prerelease: ${{ inputs.prerelease }}
+          prerelease: ${{ steps.check_prerelease.outputs.is_prerelease == 'true' }}
           generate_release_notes: true
           draft: false
+
+  pypi-publish:
+    name: Publish to PyPI
+    needs: publish-release
+    uses: ./.github/workflows/pypi-publish.yaml
+    with:
+      tag_name: "v${{ inputs.version }}"
+    permissions:
+      id-token: write
+      contents: read
+
+  docker-publish:
+    name: Publish Docker Image
+    needs: publish-release
+    uses: ./.github/workflows/docker-publish.yaml
+    with:
+      version: ${{ inputs.version }}
+      prerelease: ${{ needs.publish-release.outputs.is_prerelease == 'true' }}
+    permissions:
+      contents: read
+      packages: write

@@ -4,6 +4,11 @@ on:
   push:
     tags:
       - "v*"
+  workflow_call:
+    inputs:
+      tag_name:
+        required: true
+        type: string
 
 jobs:
   pypi-publish:
@@ -17,6 +22,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag_name || github.ref }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
