@@ -42,6 +42,7 @@ def sync_one_repo(repo, storage_path, dry_run=False, backup_only=False, checkout
         _ensure_local_mirror(repo, repo_dir, source_url)
         
         if not backup_only:
+             destination_provider.prepare_push(repo)
              _push_to_destination(repo, repo_dir, destination_url)
         else:
             logger.info(f"[{repo.name}] Successfully backed up locally.")

@@ -30,3 +30,10 @@ class Provider(ABC):
         If the provider is a destination, this is the push URL.
         """
         pass
+
+    def prepare_push(self, repo: Repository):
+        """
+        Optional hook to prepare the repository for pushing.
+        e.g., Unprotect branches on GitLab to allow force push.
+        """
+        pass
