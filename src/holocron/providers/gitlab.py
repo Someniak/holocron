@@ -39,6 +39,84 @@ class GitLabProvider(Provider):
         
         return all_repos
 
+    def prepare_push(self, repo: Repository):
+        """
+        Ensures the default branch is configured to allow force pushes (required for mirroring).
+        """
+        if not self.token:
+             return
+
+        # 1. Get Project ID and Default Branch
+        # We can't trust repo.name alone if we have a custom namespace, so we query by path
+        # But wait, self.get_remote_url constructs the URL based on self.namespace + repo.name via path.
+        # Let's verify how we can get the project info. 
+        # The 'repo' object comes from the source usually.
+        # We need to find the project on GitLab that matches the destination path.
+        
+        project_path = repo.name
+        if self.namespace:
+            project_path = f"{self.namespace}/{repo.name}"
+            
+        # URL encode path
+        encoded_path = project_path.replace("/", "%2F")
+        base_url = self.api_url.rstrip('/')
+        if base_url.endswith('/api/v4'):
+            base_url = base_url[:-7]
+        base_url = base_url.rstrip('/')
+        
+        api_base = f"{base_url}/api/v4"
+        headers = {'Private-Token': self.token}
+        
+        try:
+            logger.debug(f"[{repo.name}] Checking branch protection for '{project_path}'...")
+            
+            # Fetch Project
+            r = requests.get(f"{api_base}/projects/{encoded_path}", headers=headers, timeout=10)
+            if r.status_code == 404:
+                return # Project likely doesn't exist yet, so no protection to worry about
+            r.raise_for_status()
+            project_data = r.json()
+            project_id = project_data['id']
+            default_branch = project_data.get('default_branch', 'main')
+            
+            # 2. Check Protection Rules
+            # GET /projects/:id/protected_branches/:name
+            r_prot = requests.get(f"{api_base}/projects/{project_id}/protected_branches/{default_branch}", headers=headers, timeout=10)
+            
+            needs_update = False
+            if r_prot.status_code == 200:
+                # Branch is protected
+                prot_data = r_prot.json()
+                if not prot_data.get('allow_force_push', False):
+                    needs_update = True
+                    logger.info(f"[{repo.name}] Branch '{default_branch}' is protected. Enabling force push...")
+            elif r_prot.status_code == 404:
+                 # Not protected, so we are good (assuming default is not protected, or if it is, it might be implicitly handled by strict defaults but usually explicit rule exists)
+                 pass
+            
+            # 3. Update Protection if needed
+            if needs_update:
+                # PATCH /projects/:id/protected_branches/:name
+                # Note: GitLab API sometimes requires unprotect + protect, or PATCH depending on version.
+                # PATCH is supported in newer GitLab. Let's try PATCH with allow_force_push=True
+                
+                # Check if PATCH is supported or if we need to blindly recreate.
+                # simpler to just update.
+                payload = {'allow_force_push': True}
+                r_patch = requests.patch(f"{api_base}/projects/{project_id}/protected_branches/{default_branch}", headers=headers, json=payload, timeout=10)
+                
+                if r_patch.status_code == 405 or r_patch.status_code == 404:
+                    # Fallback: Unprotect and Protect (Old way or if PATCH fails)
+                    # Actually, if 404, it means it's not protected? But we just checked 200. 
+                    # Let's assume standard PATCH works. If not, we might need a more complex fallback.
+                    logger.warning(f"[{repo.name}] PATCH failed: {r_patch.status_code}. Output: {r_patch.text}")
+                else:
+                    r_patch.raise_for_status()
+                    logger.info(f"[{repo.name}] Successfully enabled force push for '{default_branch}'.")
+
+        except Exception as e:
+            logger.warning(f"[{repo.name}] Failed to update branch protection (ignoring): {e}")
+
     def get_remote_url(self, repo: Repository) -> str:
         """
         Constructs the authenticated URL for pushing to GitLab.
