@@ -21,7 +21,7 @@ jobs:
 
       - name: Create Release Branch
         run: |
-          git checkout -b release/v${{ inputs.version }}
+          git checkout -B release/v${{ inputs.version }}
 
       - name: Update Version in pyproject.toml
         run: |
