@@ -18,16 +18,27 @@
           \/
 ```
 
-**Holocron** is a powerful Python application designed to mirror your GitHub repositories to a local directory or a self-hosted GitLab instance. It supports parallel syncing, continuous watch mode, and local-only backups (no GitLab required). Ideal if you need a local backup for any reason. 
+**Holocron** is a powerful Python application designed to mirror your GitHub repositories to a local directory or a self-hosted GitLab instance. It supports parallel syncing, continuous watch mode, and local-only backups (no GitLab required).
+
+## Why Holocron?
+> "Why not just run `git pull` and `git push` in a cron job?"
+
+While a simple script works for one repo, managing hundreds requires a robust tool. Holocron solves the common headaches of mass-mirroring:
+
+1.  **True Mirroring**: Uses `git clone --mirror` to perfectly replicate **all** refs (branches, tags, notes, and Pull Request refs), not just the default branch.
+2.  **Automated Discovery**: Automatically finds all repositories (including new ones) in your user or organization account. You don't need to maintain a list.
+3.  **Smart Sync**: Avoids redundant work by checking the `pushed_at` timestamp. If a repo hasn't changed, it isn't touched.
+4.  **Resilience**: Handles GitLab branch protection rules automatically (enabling "Allow Force Push" when needed) which usually blocks standard mirroring scripts.
+5.  **Parallelism**: Syncs multiple repositories simultaneously, turning an hours-long serial backup into minutes.
 
 ## Features
+- **Supported Destinations**:
+    - **GitLab**: Full mirror with automatic creation/updates (requires existing empty project or "create on push").
+    - **Local Disk**: Create a local-only backup archive without needing a second Git server.
 - **Parallel Syncing**: Sync multiple repositories concurrently for maximum speed.
-- **Continuous Watch Mode**: Polls for changes and syncs only when necessary (smart redundancy checks).
-- **Two-Way Mirroring**: Creates a bare mirror (`.git` folder) for safety AND an optional checkout for visibility.
+- **Continuous Watch Mode**: Polls for changes and syncs only when necessary.
+- **Sidecar Checkout**: Creates a bare mirror (`.git` folder) for safety AND an optional viewable checkout for easy browsing.
 - **Dockerized**: Runs as a lightweight container.
-- **Backup Level**: 
-    - Full: GitHub -> Local -> GitLab
-    - Backup-Only: GitHub -> Local (No GitLab token needed)
 
 ## Quick Start
 
