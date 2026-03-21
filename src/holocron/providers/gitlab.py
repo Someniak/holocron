@@ -169,11 +169,8 @@ class GitLabProvider(Provider):
                 logger.debug(f"Requesting page {page} from {base_url}...")
 
                 r = requests.get(base_url, headers=headers, params=query_params, timeout=20)
-                handle_rate_limit(r)
-
-                if r.status_code == 429:
-                    r = requests.get(base_url, headers=headers, params=query_params, timeout=20)
-
+                if handle_rate_limit(r):
+                    continue  # Retry after rate limit wait
                 r.raise_for_status()
 
                 data = r.json()

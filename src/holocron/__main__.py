@@ -50,7 +50,7 @@ def _filter_repos(
     return filtered
 
 
-def _sanitize_repo_name(name: str) -> bool:
+def _is_safe_repo_name(name: str) -> bool:
     """Validate that a repository name is safe for filesystem operations."""
     return ".." not in name and not name.startswith("/") and "\\" not in name and "\x00" not in name
 
@@ -122,7 +122,7 @@ def run_sync_cycle(
             repo_name = repo.name
 
             # Validate repo name for safety
-            if not _sanitize_repo_name(repo_name):
+            if not _is_safe_repo_name(repo_name):
                 logger.warning(f"[{repo_name}] Skipping: unsafe repository name.")
                 stats["skipped"] += 1
                 continue
@@ -180,13 +180,16 @@ def get_provider(
 ) -> Provider:
     """Factory to get the correct provider instance."""
     if name == "github":
-        assert token is not None, "GitHub token is required"
+        if not token:
+            raise ValueError("GitHub token is required")
         return GitHubProvider(token, api_url_github)
     elif name == "gitlab":
-        assert token is not None, "GitLab token is required"
+        if not token:
+            raise ValueError("GitLab token is required")
         return GitLabProvider(api_url_gitlab, token, namespace)
     elif name == "bitbucket":
-        assert bb_username is not None and bb_app_password is not None, "Bitbucket credentials are required"
+        if not bb_username or not bb_app_password:
+            raise ValueError("Bitbucket credentials are required")
         return BitbucketProvider(bb_username, bb_app_password)
     else:
         raise ValueError(f"Unknown provider: {name}")

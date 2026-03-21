@@ -42,7 +42,8 @@ def sync_one_repo(
     repo_dir = os.path.join(storage_path, f"{repo.name}.git")
 
     # 1. Construct Secure URLs
-    assert source_provider is not None, "Source provider is required"
+    if source_provider is None:
+        raise ValueError("Source provider is required")
     source_url = source_provider.get_remote_url(repo)
 
     destination_url: Optional[str] = None

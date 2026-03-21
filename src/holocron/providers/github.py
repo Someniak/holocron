@@ -1,3 +1,4 @@
+import contextlib
 from datetime import datetime
 from typing import Optional
 
@@ -68,8 +69,6 @@ class GitHubProvider(Provider):
         """Helper to convert GitHub API dict to Repository object."""
         pushed_at = None
         if item.get("pushed_at"):
-            import contextlib
-
             with contextlib.suppress(ValueError):
                 pushed_at = datetime.strptime(item["pushed_at"], "%Y-%m-%dT%H:%M:%SZ")
 
@@ -101,12 +100,8 @@ class GitHubProvider(Provider):
                 logger.debug(f"Requesting page {page} from {base_url}")
 
                 r = requests.get(base_url, headers=headers, params=query_params, timeout=20)
-                handle_rate_limit(r)
-
-                if r.status_code == 429:
-                    # Re-request after rate limit wait
-                    r = requests.get(base_url, headers=headers, params=query_params, timeout=20)
-
+                if handle_rate_limit(r):
+                    continue  # Retry after rate limit wait
                 r.raise_for_status()
 
                 data = r.json()

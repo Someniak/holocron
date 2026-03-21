@@ -42,14 +42,17 @@ def retry_on_failure(
     return decorator
 
 
-def handle_rate_limit(response: requests.Response) -> None:
-    """Checks for rate limiting headers and waits if necessary."""
+def handle_rate_limit(response: requests.Response) -> bool:
+    """Checks for rate limiting headers and waits if necessary.
+
+    Returns True if the request should be retried (429 received).
+    """
     if response.status_code == 429:
         retry_after = response.headers.get("Retry-After")
         wait_time = int(retry_after) if retry_after else 60
         logger.warning(f"[Rate Limit] Hit rate limit. Waiting {wait_time}s...")
         time.sleep(wait_time)
-        return
+        return True
 
     remaining = response.headers.get("X-RateLimit-Remaining")
     if remaining is not None and int(remaining) <= 5:
@@ -61,3 +64,4 @@ def handle_rate_limit(response: requests.Response) -> None:
                     f"[Rate Limit] Only {remaining} requests remaining. Waiting {wait_seconds}s for reset..."
                 )
                 time.sleep(wait_seconds)
+    return False

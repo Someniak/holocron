@@ -100,12 +100,8 @@ class BitbucketProvider(Provider):
                     params=params,
                     timeout=20,
                 )
-                handle_rate_limit(r)
-
-                if r.status_code == 429:
-                    # Re-request after waiting
-                    r = requests.get(next_url, auth=self.auth, params=params, timeout=20)
-
+                if handle_rate_limit(r):
+                    continue  # Retry after rate limit wait
                 r.raise_for_status()
                 data = r.json()
 
