@@ -161,6 +161,7 @@ class GitLabProvider(Provider):
         query_params["per_page"] = 100
 
         logger.debug(f"Fetching {context_name}...")
+        rate_limit_retries = 0
 
         while True:
             try:
@@ -170,7 +171,12 @@ class GitLabProvider(Provider):
 
                 r = requests.get(base_url, headers=headers, params=query_params, timeout=20)
                 if handle_rate_limit(r):
+                    rate_limit_retries += 1
+                    if rate_limit_retries > 3:
+                        logger.error(f"Rate limit retries exhausted for {context_name}.")
+                        break
                     continue  # Retry after rate limit wait
+                rate_limit_retries = 0
                 r.raise_for_status()
 
                 data = r.json()
@@ -184,6 +190,9 @@ class GitLabProvider(Provider):
                     break
 
                 page += 1
+            except ValueError as e:
+                logger.error(f"Invalid response from {context_name}: {e}")
+                break
             except requests.HTTPError as e:
                 logger.error(f"HTTP error fetching {context_name}: {e}")
                 break

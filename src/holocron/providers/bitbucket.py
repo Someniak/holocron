@@ -37,7 +37,9 @@ class BitbucketProvider(Provider):
         for item in user_repos:
             uuid = item.get("uuid", "")
             if uuid not in seen_uuids:
-                all_repos.append(self._to_repository(item))
+                repo = self._to_repository(item)
+                if repo.clone_url:
+                    all_repos.append(repo)
                 seen_uuids.add(uuid)
 
         # Fetch repositories from all workspaces the user is a member of
@@ -56,7 +58,9 @@ class BitbucketProvider(Provider):
             for item in ws_repos:
                 uuid = item.get("uuid", "")
                 if uuid not in seen_uuids:
-                    all_repos.append(self._to_repository(item))
+                    repo = self._to_repository(item)
+                    if repo.clone_url:
+                        all_repos.append(repo)
                     seen_uuids.add(uuid)
 
         return all_repos
@@ -76,6 +80,9 @@ class BitbucketProvider(Provider):
                 clone_url = link["href"]
                 break
 
+        if not clone_url:
+            logger.warning(f"[{item.get('slug', '?')}] No HTTPS clone URL found, skipping.")
+
         return Repository(
             name=item.get("slug", item.get("name", "")),
             clone_url=clone_url,
@@ -90,6 +97,7 @@ class BitbucketProvider(Provider):
         next_url: Optional[str] = url
 
         logger.debug(f"Fetching {context_name}...")
+        rate_limit_retries = 0
 
         while next_url:
             try:
@@ -101,7 +109,12 @@ class BitbucketProvider(Provider):
                     timeout=20,
                 )
                 if handle_rate_limit(r):
+                    rate_limit_retries += 1
+                    if rate_limit_retries > 3:
+                        logger.error(f"Rate limit retries exhausted for {context_name}.")
+                        break
                     continue  # Retry after rate limit wait
+                rate_limit_retries = 0
                 r.raise_for_status()
                 data = r.json()
 
@@ -111,6 +124,9 @@ class BitbucketProvider(Provider):
                 logger.debug(f"Fetched {len(values)} items from {context_name}.")
 
                 next_url = data.get("next")
+            except ValueError as e:
+                logger.error(f"Invalid response from {context_name}: {e}")
+                break
             except requests.ConnectionError as e:
                 logger.error(f"Connection error fetching {context_name}: {e}")
                 raise

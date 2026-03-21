@@ -206,14 +206,25 @@ def main() -> None:
     if args.destination == "local":
         args.backup_only = True
 
+    gh_token: Optional[str]
+    gl_token: Optional[str]
+    bb_username: Optional[str]
+    bb_app_password: Optional[str]
     gh_token, gl_token, bb_username, bb_app_password = validate_config(args.source, args.destination, args.backup_only)
 
     # Initialize Providers
     logger.debug(f"Source: {args.source}, Destination: {args.destination}")
 
+    def _token_for(provider_name: str) -> Optional[str]:
+        if provider_name == "github":
+            return gh_token
+        elif provider_name == "gitlab":
+            return gl_token
+        return None  # Bitbucket uses bb_username/bb_app_password instead
+
     source_provider = get_provider(
         args.source,
-        gh_token if args.source in ("github",) else gl_token,
+        _token_for(args.source),
         GITHUB_API_URL,
         GITLAB_API_URL,
         namespace=args.gitlab_namespace,
@@ -223,10 +234,9 @@ def main() -> None:
 
     destination_provider = None
     if not args.backup_only:
-        dest_token = gh_token if args.destination == "github" else gl_token
         destination_provider = get_provider(
             args.destination,
-            dest_token,
+            _token_for(args.destination),
             GITHUB_API_URL,
             GITLAB_API_URL,
             namespace=args.gitlab_namespace,
