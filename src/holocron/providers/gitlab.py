@@ -1,10 +1,16 @@
-import requests
+import contextlib
 from datetime import datetime
-from ..logger import logger, log_execution
+from typing import Optional
+
+import requests
+
+from ..logger import log_execution, logger
+from ..retry import handle_rate_limit, retry_on_failure
 from .base import Provider, Repository
 
+
 class GitLabProvider(Provider):
-    def __init__(self, api_url, token, namespace=None):
+    def __init__(self, api_url: str, token: str, namespace: Optional[str] = None):
         self.api_url = api_url
         self.token = token
         self.namespace = namespace
@@ -14,126 +20,107 @@ class GitLabProvider(Provider):
         """
         Fetches repositories from GitLab (User + Groups).
         """
-        headers = {'Private-Token': self.token}
-        all_repos = []
-        seen_ids = set()
+        headers = {"Private-Token": self.token}
+        all_repos: list[Repository] = []
+        seen_ids: set[int] = set()
 
-        # 1. Fetch User Repos (and member projects)
         user_repos = self._get_all_pages(
             f"{self.api_url}/projects",
             headers,
             "GitLab projects (membership=true)",
-             query_params={
+            query_params={
                 "membership": "true",
-                "simple": "true" 
-             }
+                "simple": "true",
+            },
         )
-        
+
         for item in user_repos:
-             if item['id'] not in seen_ids:
+            if item["id"] not in seen_ids:
                 all_repos.append(self._to_repository(item))
-                seen_ids.add(item['id'])
-        
-        # Note: GitLab's /projects?membership=true usually covers everything a user has access to, 
-        # including group projects. If strict group separation is needed, we'd query /groups.
-        
+                seen_ids.add(item["id"])
+
         return all_repos
 
-    def prepare_push(self, repo: Repository):
+    def prepare_push(self, repo: Repository) -> None:
         """
         Ensures the default branch is configured to allow force pushes (required for mirroring).
         """
         if not self.token:
-             return
+            return
 
-        # 1. Get Project ID and Default Branch
-        # We can't trust repo.name alone if we have a custom namespace, so we query by path
-        # But wait, self.get_remote_url constructs the URL based on self.namespace + repo.name via path.
-        # Let's verify how we can get the project info. 
-        # The 'repo' object comes from the source usually.
-        # We need to find the project on GitLab that matches the destination path.
-        
         project_path = repo.name
         if self.namespace:
             project_path = f"{self.namespace}/{repo.name}"
-            
-        # URL encode path
+
         encoded_path = project_path.replace("/", "%2F")
-        base_url = self.api_url.rstrip('/')
-        if base_url.endswith('/api/v4'):
+        base_url = self.api_url.rstrip("/")
+        if base_url.endswith("/api/v4"):
             base_url = base_url[:-7]
-        base_url = base_url.rstrip('/')
-        
+        base_url = base_url.rstrip("/")
+
         api_base = f"{base_url}/api/v4"
-        headers = {'Private-Token': self.token}
-        
+        headers = {"Private-Token": self.token}
+
         try:
             logger.debug(f"[{repo.name}] Checking branch protection for '{project_path}'...")
-            
-            # Fetch Project
+
             r = requests.get(f"{api_base}/projects/{encoded_path}", headers=headers, timeout=10)
             if r.status_code == 404:
-                return # Project likely doesn't exist yet, so no protection to worry about
+                return
             r.raise_for_status()
             project_data = r.json()
-            project_id = project_data['id']
-            default_branch = project_data.get('default_branch', 'main')
-            
-            # 2. Check Protection Rules
-            # GET /projects/:id/protected_branches/:name
-            r_prot = requests.get(f"{api_base}/projects/{project_id}/protected_branches/{default_branch}", headers=headers, timeout=10)
-            
+            project_id = project_data["id"]
+            default_branch = project_data.get("default_branch", "main")
+
+            r_prot = requests.get(
+                f"{api_base}/projects/{project_id}/protected_branches/{default_branch}",
+                headers=headers,
+                timeout=10,
+            )
+
             needs_update = False
             if r_prot.status_code == 200:
-                # Branch is protected
                 prot_data = r_prot.json()
-                if not prot_data.get('allow_force_push', False):
+                if not prot_data.get("allow_force_push", False):
                     needs_update = True
                     logger.info(f"[{repo.name}] Branch '{default_branch}' is protected. Enabling force push...")
             elif r_prot.status_code == 404:
-                 # Not protected, so we are good (assuming default is not protected, or if it is, it might be implicitly handled by strict defaults but usually explicit rule exists)
-                 pass
-            
-            # 3. Update Protection if needed
+                pass
+
             if needs_update:
-                # PATCH /projects/:id/protected_branches/:name
-                # Note: GitLab API sometimes requires unprotect + protect, or PATCH depending on version.
-                # PATCH is supported in newer GitLab. Let's try PATCH with allow_force_push=True
-                
-                # Check if PATCH is supported or if we need to blindly recreate.
-                # simpler to just update.
-                payload = {'allow_force_push': True}
-                r_patch = requests.patch(f"{api_base}/projects/{project_id}/protected_branches/{default_branch}", headers=headers, json=payload, timeout=10)
-                
-                if r_patch.status_code == 405 or r_patch.status_code == 404:
-                    # Fallback: Unprotect and Protect (Old way or if PATCH fails)
-                    # Actually, if 404, it means it's not protected? But we just checked 200. 
-                    # Let's assume standard PATCH works. If not, we might need a more complex fallback.
+                payload = {"allow_force_push": True}
+                r_patch = requests.patch(
+                    f"{api_base}/projects/{project_id}/protected_branches/{default_branch}",
+                    headers=headers,
+                    json=payload,
+                    timeout=10,
+                )
+
+                if r_patch.status_code in (405, 404):
                     logger.warning(f"[{repo.name}] PATCH failed: {r_patch.status_code}. Output: {r_patch.text}")
                 else:
                     r_patch.raise_for_status()
                     logger.info(f"[{repo.name}] Successfully enabled force push for '{default_branch}'.")
 
-        except Exception as e:
+        except requests.HTTPError as e:
+            logger.warning(f"[{repo.name}] HTTP error updating branch protection: {e}")
+        except requests.ConnectionError as e:
+            logger.warning(f"[{repo.name}] Connection error updating branch protection: {e}")
+        except requests.RequestException as e:
             logger.warning(f"[{repo.name}] Failed to update branch protection (ignoring): {e}")
 
     def get_remote_url(self, repo: Repository) -> str:
         """
         Constructs the authenticated URL for pushing to GitLab.
         """
-        # The logic removes '/api/v4' from the user-provided API URL to get the base URL
-        # and injects the OAuth2 token.
-        # The logic removes '/api/v4' from the user-provided API URL to get the base URL
-        # and injects the OAuth2 token.
-        base_url = self.api_url.rstrip('/')
-        if base_url.endswith('/api/v4'):
+        base_url = self.api_url.rstrip("/")
+        if base_url.endswith("/api/v4"):
             base_url = base_url[:-7]
-        base_url = base_url.rstrip('/')
+        base_url = base_url.rstrip("/")
 
         url = f"{base_url}/{repo.name}.git"
 
         if self.namespace:
-            # Inject namespace (group/user) between base_url and repo_name
             url = f"{base_url}/{self.namespace}/{repo.name}.git"
 
         if self.token:
@@ -141,63 +128,75 @@ class GitLabProvider(Provider):
                 return url.replace("https://", f"https://oauth2:{self.token}@", 1)
             elif url.startswith("http://"):
                 return url.replace("http://", f"http://oauth2:{self.token}@", 1)
-        
+
         return url
 
     def _to_repository(self, item: dict) -> Repository:
         """Helper to convert GitLab API dict to Repository object."""
         pushed_at = None
-        if item.get('last_activity_at'):
+        if item.get("last_activity_at"):
             try:
-                # 2024-01-01T00:00:00.000Z
-                pushed_at = datetime.strptime(item['last_activity_at'].split('.')[0], "%Y-%m-%dT%H:%M:%S")
+                pushed_at = datetime.strptime(item["last_activity_at"].split(".")[0], "%Y-%m-%dT%H:%M:%S")
             except ValueError:
-                # Try without microseconds if it fails
-                try:
-                    pushed_at = datetime.strptime(item['last_activity_at'], "%Y-%m-%dT%H:%M:%SZ")
-                except ValueError:
-                    pass
-                
+                with contextlib.suppress(ValueError):
+                    pushed_at = datetime.strptime(item["last_activity_at"], "%Y-%m-%dT%H:%M:%SZ")
+
         return Repository(
-            name=item['path'], # Use path (slug) as name
-            clone_url=item['http_url_to_repo'],
-            size=0, # Simple objects might not have stats, default to 0
-            pushed_at=pushed_at
+            name=item["path"],
+            clone_url=item["http_url_to_repo"],
+            size=0,
+            pushed_at=pushed_at,
         )
 
-    def _get_all_pages(self, base_url, headers, context_name, query_params=None):
+    @retry_on_failure(max_retries=3)
+    def _get_all_pages(
+        self, base_url: str, headers: dict, context_name: str, query_params: Optional[dict] = None
+    ) -> list[dict]:
         """Helper to fetch all pages from a GitLab endpoint."""
         if query_params is None:
             query_params = {}
 
-        items = []
+        items: list[dict] = []
         page = 1
-        query_params['per_page'] = 100
-        
+        query_params["per_page"] = 100
+
         logger.debug(f"Fetching {context_name}...")
-        
+
         while True:
             try:
-                query_params['page'] = page
-                
+                query_params["page"] = page
+
                 logger.debug(f"Requesting page {page} from {base_url}...")
 
                 r = requests.get(base_url, headers=headers, params=query_params, timeout=20)
+                handle_rate_limit(r)
+
+                if r.status_code == 429:
+                    r = requests.get(base_url, headers=headers, params=query_params, timeout=20)
+
                 r.raise_for_status()
-                
+
                 data = r.json()
                 if not data:
                     break
-                
+
                 count = len(data)
                 items.extend(data)
-                
-                # Check for pagination headers usually, but length check is robust enough for simple cases
-                if count < query_params['per_page']:
-                     break
-                
+
+                if count < query_params["per_page"]:
+                    break
+
                 page += 1
-            except Exception as e:
+            except requests.HTTPError as e:
+                logger.error(f"HTTP error fetching {context_name}: {e}")
+                break
+            except requests.ConnectionError as e:
+                logger.error(f"Connection error fetching {context_name}: {e}")
+                raise
+            except requests.Timeout as e:
+                logger.error(f"Timeout fetching {context_name}: {e}")
+                raise
+            except requests.RequestException as e:
                 logger.error(f"ERROR fetching {context_name}: {e}")
                 break
         return items

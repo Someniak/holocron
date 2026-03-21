@@ -1,15 +1,18 @@
 from abc import ABC, abstractmethod
-from typing import Optional
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Optional
+
 
 @dataclass
 class Repository:
     """Repository object - spec v1"""
+
     name: str
     clone_url: str
     size: int = 0  # in KB
     pushed_at: Optional[datetime] = None
+
 
 class Provider(ABC):
     """Abstract base class for all providers (Source or Destination)."""
@@ -31,9 +34,8 @@ class Provider(ABC):
         """
         pass
 
-    def prepare_push(self, repo: Repository):
+    def prepare_push(self, repo: Repository) -> None:  # noqa: B027
         """
         Optional hook to prepare the repository for pushing.
         e.g., Unprotect branches on GitLab to allow force push.
         """
-        pass

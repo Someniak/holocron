@@ -1,5 +1,5 @@
-from .gitlab import GitLabProvider
-from .github import GitHubProvider
 from .base import Provider
+from .github import GitHubProvider
+from .gitlab import GitLabProvider
 
-__all__ = ["GitLabProvider", "GitHubProvider", "Provider"]
+__all__ = ["GitHubProvider", "GitLabProvider", "Provider"]
