@@ -72,7 +72,7 @@ uv sync
 
 # Run a one-time backup of all your repos locally (visible files)
 export GITHUB_TOKEN=your_token
-uv run python src/holocron.py --backup-only --checkout --concurrency 10
+uv run holocron --backup-only --checkout --concurrency 10
 ```
 
 ## Configuration

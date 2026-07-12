@@ -4,7 +4,6 @@ import argparse
 from dotenv import load_dotenv
 
 # Load env vars from .env file
-# Load env vars from .env file
 load_dotenv()
 
 # --- METADATA ---
