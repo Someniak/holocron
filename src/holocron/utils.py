@@ -1,6 +1,17 @@
+import re
 import sys
 from .config import __author__, __license__
 from .logger import logger
+
+# Matches credentials embedded in a URL, e.g. https://oauth2:TOKEN@host/... or
+# https://user:pass@host/... . Used to scrub tokens out of git output before logging.
+_CREDENTIAL_RE = re.compile(r"(https?://)[^/\s:@]+:[^/\s@]+@")
+
+def redact(text):
+    """Removes embedded URL credentials (tokens/passwords) from a string."""
+    if not text:
+        return text
+    return _CREDENTIAL_RE.sub(r"\1***@", str(text))
 
 def handle_credits(show_credits):
     """Checks for --credits flag and exits if pre sent."""

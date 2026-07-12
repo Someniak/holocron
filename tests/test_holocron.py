@@ -3,7 +3,7 @@ import sys
 import pytest
 import argparse
 from unittest.mock import MagicMock, patch, call
-from holocron.__main__ import main
+from holocron.__main__ import main, run_sync_cycle
 from holocron.providers.base import Repository
 from datetime import datetime
 
@@ -258,3 +258,23 @@ def test_main_exception_logging(mock_logger, mock_sync, mock_get_provider, mock_
     mock_logger.error.assert_called()
     log_calls = [str(call) for call in mock_logger.error.call_args_list]
     assert any("generated an exception: Thread Boom" in call for call in log_calls)
+
+@patch("holocron.__main__.logger")
+def test_run_sync_cycle_survives_fetch_failure(mock_logger):
+    # A raising fetch_repos (e.g. incomplete pagination) must not propagate out of
+    # the cycle; it should be logged and the cycle should return 0 so watch mode
+    # can retry next interval instead of crashing.
+    config = {
+        "concurrency": 1, "storage": "/tmp", "watch": True, "window": 10,
+        "backup_only": False, "dry_run": False, "checkout": False,
+    }
+    mock_source = MagicMock()
+    mock_source.fetch_repos.side_effect = RuntimeError("Incomplete fetch of user repositories")
+    mock_dest = MagicMock()
+
+    result = run_sync_cycle(config, mock_source, mock_dest, {})
+
+    assert result == 0
+    mock_logger.error.assert_called()
+    log_calls = [str(c) for c in mock_logger.error.call_args_list]
+    assert any("failed to fetch repositories" in c for c in log_calls)

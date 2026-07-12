@@ -108,11 +108,16 @@ class GitHubProvider(Provider):
                 
                 if count < query_params['per_page']:
                     break
-                    
+
                 page += 1
             except Exception as e:
+                # Do NOT swallow-and-break: returning pages 1..N-1 here would look
+                # like a complete result and silently drop repos from the mirror.
+                # Fail loud so the caller knows the fetch was incomplete.
                 logger.error(f"ERROR fetching {context_name}: {e}")
-                break
+                raise RuntimeError(
+                    f"Incomplete fetch of {context_name}: failed at page {page}: {e}"
+                ) from e
         return items
 
     def prepare_push(self, repo: Repository):
@@ -150,118 +155,66 @@ class GitHubProvider(Provider):
                 
             if r_prot.status_code == 200:
                 prot_data = r_prot.json()
-                # Check allow_force_pushes
-                # GitHub returns: "allow_force_pushes": { "enabled": boolean }
+                # Protection GET returns allow_force_pushes as {"enabled": bool}.
                 allow_force = prot_data.get('allow_force_pushes', {}).get('enabled', False)
-                
+
                 if not allow_force:
                     logger.info(f"[{repo.name}] Branch '{default_branch}' is protected. Enabling force push...")
-                    
-                    # 3. Update Protection
-                    # To update just one setting without overwriting everything, GitHub API is tricky.
-                    # PUT /repos/{owner}/{repo}/branches/{branch}/protection requires the FULL payload usually.
-                    # HOWEVER, there is no generic PATCH for protection.
-                    # But we can try to re-PUT the existing data with the modification.
-                    # Or simpler: Is there a specific endpoint?
-                    # No, usually need to PUT protection.
-                    
-                    # Let's clone the structure we got from GET (minus some readonly fields usually)
-                    # This is risky as GET output != PUT input 1:1.
-                    
-                    # Alternative: If using GraphQL, it's easier. But we are using REST.
-                    
-                    # Actually, for just ONE setting, we might be stuck unless we want to managing full protection.
-                    # WAIT! 'allow_force_pushes' IS typically managed by `enforce_admins` or strictly via the payload.
-                    
-                    # Let's try to construct a minimal PUT payload that respects existing checks?
-                    # "required_status_checks": ..., "enforce_admins": ..., "required_pull_request_reviews": ..., "restrictions": ...
-                    
-                    # If we just send what we want to update, it might fail or disable others.
-                    # BUT, 'allow_force_pushes' is top level in the PUT body.
-                    
-                    # Let's try to build a safe update payload from the GET response.
-                    # We map the response fields to the request fields.
-                    
+
+                    # GitHub has no PATCH for branch protection; the only way to flip
+                    # allow_force_pushes is a full PUT. To avoid wiping the user's other
+                    # rules, we rebuild the PUT payload from the GET response, translating
+                    # the (differently-shaped) GET fields back into PUT request format.
+                    # Ref: https://docs.github.com/en/rest/branches/branch-protection#update-branch-protection
                     update_payload = {
                         "required_status_checks": prot_data.get("required_status_checks"),
                         "enforce_admins": prot_data.get("enforce_admins", {}).get("enabled", False),
                         "required_pull_request_reviews": prot_data.get("required_pull_request_reviews"),
                         "restrictions": prot_data.get("restrictions"),
-                        "allow_force_pushes": True, # This is our change
+                        "allow_force_pushes": True,  # the one setting we are changing
                         "allow_deletions": prot_data.get("allow_deletions", {}).get("enabled", False),
-                        # There might be others like 'required_linear_history', 'block_creations', 'required_conversation_resolution', 'lock_branch', 'allow_fork_syncing'
                     }
-                    
-                    # Clean up None values if they shouldn't be sent? 
-                    # Usually "required_status_checks": null disables it.
-                    # "restrictions": null disables it.
-                    
-                    # We need to handle specific nested structures carefully.
-                    # e.g. 'required_status_checks' might need some cleaning.
-                    
-                    # Given the risk of overwriting, maybe we should just LOG a warning if we can't do it safely?
-                    # OR, assume if the user asks for this, they trust us.
-                    # But let's implementing a safer partial update if possible? No PATCH.
-                    
-                    # Let's try to use the most common fields.
-                    
-                    # Ref: https://docs.github.com/en/rest/branches/branch-protection?apiVersion=2022-11-28#update-branch-protection
-                    # Required: required_status_checks, enforce_admins, required_pull_request_reviews, restrictions.
-                    
-                    # If any is missing in GET, it implies disabled?
-                    # If GET returns null, we send null.
-                    
-                    # We need to ensure we don't break their protection.
-                    
+
                     logger.info(f"[{repo.name}] Updating branch protection to allow force push.")
-                    # Note: Using True directly for bool fields, or objects check
-                    
-                    # Handling nullable objects
-                    # required_status_checks
+
+                    # Translate nullable nested objects from GET shape to PUT shape.
+                    # required_status_checks: drop read-only 'url', keep strict/contexts/checks.
                     rsc = prot_data.get("required_status_checks")
                     if rsc:
-                        # Convert response format to request format if needed?
-                        # Response: { "url":..., "strict": boolean, "contexts": [...] }
-                        # Request: { "strict": boolean, "contexts": [...] }
-                        # We need to filter out 'url' etc.
                         update_payload["required_status_checks"] = {
                             "strict": rsc.get("strict", False),
                             "contexts": rsc.get("contexts", []),
-                            "checks": rsc.get("checks", []) # New API uses checks
+                            "checks": rsc.get("checks", [])  # newer API uses 'checks'
                         }
-                    
-                    # required_pull_request_reviews
+
+                    # required_pull_request_reviews: keep only PUT-writable fields.
                     rprr = prot_data.get("required_pull_request_reviews")
                     if rprr:
-                        # Filter readonly
                         update_payload["required_pull_request_reviews"] = {
-                            "dismissal_restrictions": rprr.get("dismissal_restrictions"), # dict with users/teams or null
+                            "dismissal_restrictions": rprr.get("dismissal_restrictions"),
                             "dismiss_stale_reviews": rprr.get("dismiss_stale_reviews", False),
                             "require_code_owner_reviews": rprr.get("require_code_owner_reviews", False),
                             "required_approving_review_count": rprr.get("required_approving_review_count", 1),
-                            # "require_last_push_approval": ...
                         }
-                        
-                        # Handle dismissal restrictions structure
+
+                        # PUT expects dismissal_restrictions as lists of login/slug names,
+                        # not the user/team objects the GET response returns.
                         dr = rprr.get("dismissal_restrictions")
                         if dr:
-                            # Response: { "users": [...], "teams": [...], "apps": [...] }
-                            # Request: { "users": [slugs...], "teams": [slugs...], ... } -> wait, request expects list of names? or objects?
-                            # Request expects "users": ["name1"], "teams": ["slug1"]
                             users = [u['login'] for u in dr.get('users', [])]
                             teams = [t['slug'] for t in dr.get('teams', [])]
                             items = {}
                             if users: items['users'] = users
                             if teams: items['teams'] = teams
                             update_payload["required_pull_request_reviews"]["dismissal_restrictions"] = items
-                            
-                    # restrictions
+
+                    # restrictions: same object -> name-list translation.
                     res = prot_data.get("restrictions")
                     if res:
                          users = [u['login'] for u in res.get('users', [])]
                          teams = [t['slug'] for t in res.get('teams', [])]
-                         apps = [a['slug'] for a in res.get('apps', [])] # apps uses slug? or name? usually slug
-                         
+                         apps = [a['slug'] for a in res.get('apps', [])]
+
                          update_payload["restrictions"] = {
                              "users": users,
                              "teams": teams,
@@ -272,5 +225,12 @@ class GitHubProvider(Provider):
                     r_put.raise_for_status()
                     logger.info(f"[{repo.name}] Successfully enabled force push.")
 
+        except requests.exceptions.HTTPError as e:
+            # Non-fatal: if we cannot relax protection the subsequent push will
+            # fail and be reported separately. Surface the status so the common
+            # cause (insufficient token scope) is diagnosable instead of hidden.
+            status = e.response.status_code if e.response is not None else "?"
+            hint = " (token likely missing 'repo'/'administration' scope)" if status == 403 else ""
+            logger.warning(f"[{repo.name}] Failed to update GitHub branch protection: HTTP {status}{hint}: {e}")
         except Exception as e:
             logger.warning(f"[{repo.name}] Failed to update GitHub branch protection: {e}")

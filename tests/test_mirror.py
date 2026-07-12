@@ -4,6 +4,21 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 from holocron.mirror import needs_sync, sync_one_repo
 from holocron.providers.base import Repository
+from holocron.utils import redact
+
+
+def test_redact_strips_oauth_token():
+    text = "fatal: could not read from https://oauth2:SECRETTOKEN@github.com/u/r.git"
+    out = redact(text)
+    assert "SECRETTOKEN" not in out
+    assert "https://***@github.com/u/r.git" in out
+
+def test_redact_strips_userpass():
+    assert redact("http://user:pass@gitlab.local/x.git") == "http://***@gitlab.local/x.git"
+
+def test_redact_noop_without_credentials():
+    assert redact("plain error, no url") == "plain error, no url"
+    assert redact(None) is None
 
 def test_needs_sync_true():
     # 5 minutes ago
@@ -97,6 +112,32 @@ def test_sync_one_repo_git_failure(mock_logger, mock_exists, mock_makedirs, mock
     # Should catch and log
     mock_logger.error.assert_called()
     assert "ERROR syncing fail-repo" in mock_logger.error.call_args[0][0]
+
+@patch("subprocess.run")
+@patch("os.makedirs")
+@patch("os.path.exists")
+@patch("holocron.mirror.logger")
+def test_sync_one_repo_redacts_token_in_error(mock_logger, mock_exists, mock_makedirs, mock_run):
+    # A git failure whose cmd/stderr echo the token-embedded URL must be redacted
+    # before it reaches the logs.
+    repo = Repository(name='secret-repo', clone_url='https://github.com/u/r.git')
+    source_provider = MagicMock()
+    source_provider.get_remote_url.return_value = "https://oauth2:SECRETTOKEN@github.com/u/r.git"
+
+    mock_exists.return_value = False  # forces clone
+
+    err = subprocess.CalledProcessError(
+        128,
+        ["git", "clone", "--mirror", "https://oauth2:SECRETTOKEN@github.com/u/r.git"],
+        stderr=b"fatal: could not read from https://oauth2:SECRETTOKEN@github.com/u/r.git",
+    )
+    mock_run.side_effect = err
+
+    sync_one_repo(repo, storage_path="/tmp", source_provider=source_provider)
+
+    logged = mock_logger.error.call_args[0][0]
+    assert "SECRETTOKEN" not in logged
+    assert "***@github.com" in logged
     
 @patch("subprocess.run")
 @patch("os.makedirs")

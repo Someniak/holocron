@@ -25,7 +25,14 @@ def run_sync_cycle(config: dict, source_provider, destination_provider, synced_p
     dry_run = config['dry_run']
     checkout = config['checkout']
 
-    repos = source_provider.fetch_repos()
+    try:
+        repos = source_provider.fetch_repos()
+    except Exception as exc:
+        # A failed/incomplete fetch must not produce a partial mirror. Skip this
+        # cycle entirely; watch mode will retry next interval, one-shot mode exits.
+        logger.error(f"Skipping sync cycle: failed to fetch repositories: {exc}")
+        return 0
+
     logger.debug(f"Found {len(repos)} repositories on GitHub.")
     
     print_storage_estimate(repos, checkout_mode=checkout)

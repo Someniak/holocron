@@ -29,28 +29,29 @@ def test_get_all_pages_pagination(mock_get):
 @patch("requests.get")
 @patch("holocron.providers.github.logger")
 def test_get_all_pages_error(mock_logger, mock_get):
-    # Simulate a network error
+    # Simulate a network error mid-fetch. It must NOT silently return a partial
+    # list (that would drop repos from the mirror); it must raise.
     mock_get.side_effect = Exception("Boom")
-    
+
     provider = GitHubProvider(token="test_token")
-    items = provider._get_all_pages("url", {}, "context")
-    
-    assert len(items) == 0
-    # Should have logged error
+    with pytest.raises(RuntimeError, match="Incomplete fetch of context"):
+        provider._get_all_pages("url", {}, "context")
+
+    # Should still log the underlying error
     mock_logger.error.assert_called()
     assert "ERROR fetching context" in mock_logger.error.call_args[0][0]
 
 @patch("requests.get")
 @patch("holocron.providers.github.logger")
 def test_get_all_pages_http_error(mock_logger, mock_get):
-    # Simulate 404
+    # Simulate an HTTP error (e.g. 404) -> must raise, not return empty.
     mock_resp = Mock()
     mock_resp.raise_for_status.side_effect = Exception("404 Not Found")
     mock_get.return_value = mock_resp
-    
+
     provider = GitHubProvider(token="test_token")
-    items = provider._get_all_pages("url", {}, "context")
-    assert len(items) == 0
+    with pytest.raises(RuntimeError, match="Incomplete fetch of context"):
+        provider._get_all_pages("url", {}, "context")
 
 @patch("holocron.providers.github.GitHubProvider._get_all_pages")
 def test_fetch_repos_with_orgs(mock_get_pages):

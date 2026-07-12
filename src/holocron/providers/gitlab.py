@@ -114,6 +114,13 @@ class GitLabProvider(Provider):
                     r_patch.raise_for_status()
                     logger.info(f"[{repo.name}] Successfully enabled force push for '{default_branch}'.")
 
+        except requests.exceptions.HTTPError as e:
+            # Non-fatal: if we cannot relax protection the subsequent push will
+            # fail and be reported separately. Surface the status so the common
+            # cause (insufficient token scope) is diagnosable instead of hidden.
+            status = e.response.status_code if e.response is not None else "?"
+            hint = " (token likely missing Maintainer/Owner rights or 'api' scope)" if status in (401, 403) else ""
+            logger.warning(f"[{repo.name}] Failed to update branch protection: HTTP {status}{hint}: {e}")
         except Exception as e:
             logger.warning(f"[{repo.name}] Failed to update branch protection (ignoring): {e}")
 
@@ -121,10 +128,8 @@ class GitLabProvider(Provider):
         """
         Constructs the authenticated URL for pushing to GitLab.
         """
-        # The logic removes '/api/v4' from the user-provided API URL to get the base URL
-        # and injects the OAuth2 token.
-        # The logic removes '/api/v4' from the user-provided API URL to get the base URL
-        # and injects the OAuth2 token.
+        # Strip '/api/v4' from the user-provided API URL to get the base URL,
+        # then inject the OAuth2 token.
         base_url = self.api_url.rstrip('/')
         if base_url.endswith('/api/v4'):
             base_url = base_url[:-7]
@@ -195,9 +200,14 @@ class GitLabProvider(Provider):
                 # Check for pagination headers usually, but length check is robust enough for simple cases
                 if count < query_params['per_page']:
                      break
-                
+
                 page += 1
             except Exception as e:
+                # Do NOT swallow-and-break: returning pages 1..N-1 here would look
+                # like a complete result and silently drop repos from the mirror.
+                # Fail loud so the caller knows the fetch was incomplete.
                 logger.error(f"ERROR fetching {context_name}: {e}")
-                break
+                raise RuntimeError(
+                    f"Incomplete fetch of {context_name}: failed at page {page}: {e}"
+                ) from e
         return items

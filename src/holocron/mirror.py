@@ -2,6 +2,7 @@ import os
 import subprocess
 from datetime import datetime, timedelta, timezone
 from .logger import logger, log_execution
+from .utils import redact
 
 def needs_sync(repo, window_minutes):
     """
@@ -51,7 +52,8 @@ def sync_one_repo(repo, storage_path, dry_run=False, backup_only=False, checkout
             _update_sidecar_checkout(repo, repo_dir)
         
     except subprocess.CalledProcessError as e:
-        logger.error(f"ERROR syncing {repo.name}: {e}\nOutput: {e.stderr}")
+        # redact: e (its cmd) and e.stderr can echo the token-embedded remote URL.
+        logger.error(redact(f"ERROR syncing {repo.name}: {e}\nOutput: {e.stderr}"))
 
 def _ensure_local_mirror(repo, repo_dir, source_url):
     """Clones or fetches the local bare mirror."""
@@ -92,11 +94,11 @@ def _update_sidecar_checkout(repo, repo_dir):
             subprocess.run(["git", "clone", "--quiet", repo_dir, checkout_dir], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         except subprocess.CalledProcessError as e:
             err_msg = e.stderr.decode().strip() if e.stderr else str(e)
-            logger.error(f"[{repo.name}] Failed to create checkout: {err_msg}")
+            logger.error(redact(f"[{repo.name}] Failed to create checkout: {err_msg}"))
     else:
         logger.debug(f"[{repo.name}] Updating checkout...")
         try:
             subprocess.run(["git", "-C", checkout_dir, "pull", "--quiet"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         except subprocess.CalledProcessError as e:
             err_msg = e.stderr.decode().strip() if e.stderr else str(e)
-            logger.error(f"[{repo.name}] Failed to update checkout: {err_msg}")
+            logger.error(redact(f"[{repo.name}] Failed to update checkout: {err_msg}"))

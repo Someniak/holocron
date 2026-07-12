@@ -72,7 +72,7 @@ uv sync
 
 # Run a one-time backup of all your repos locally (visible files)
 export GITHUB_TOKEN=your_token
-uv run python src/holocron.py --backup-only --checkout --concurrency 10
+uv run holocron --backup-only --checkout --concurrency 10
 ```
 
 ## Configuration
@@ -86,15 +86,38 @@ Holocron uses environment variables for secrets:
  | `GITHUB_API_URL` | URL to your GitHub API (default: `https://api.github.com`) | No |
  
  ### API Permissions
- Ensure your tokens have the minimum required scopes:
- 
- **GitHub Token (`GITHUB_TOKEN`)**
- - `repo` (Full control of private repositories) - *Required for reading private repos and modifying branch protection*
- - `read:org` (Read org and team membership) - *Required for fetching organization repos*
- 
- **GitLab Token (`GITLAB_TOKEN`)**
- - `api` (Grants complete read/write access to the API) - *Simplest option*
- - OR `read_repository` + `write_repository` - *More granular control*
+
+ Required scopes depend on whether a provider is used as the **source** (read-only)
+ or the **destination** (read/write). Grant the minimum for your `--source` /
+ `--destination` combination.
+
+ #### GitHub Token (`GITHUB_TOKEN`)
+
+ API calls made: `GET /user/repos`, `GET /user/orgs`, `GET /orgs/{org}/repos`,
+ `git clone` (source); plus `GET`/`PUT /repos/{owner}/{repo}/branches/{branch}/protection`
+ and `git push` (destination).
+
+ **As source (read-only)**
+ - *Classic PAT:* `repo` (private repos) — or `public_repo` for public only — **plus** `read:org` (for the organization endpoints).
+ - *Fine-grained PAT:* Repository permissions → **Contents: Read** and **Metadata: Read** (mandatory). A fine-grained token is scoped to a single owner, so to mirror organization repos it must be issued for / approved by that org; otherwise use a classic token with `read:org`.
+
+ **As destination (adds write + branch-protection management)**
+ - *Classic PAT:* `repo` (includes the `administration` rights needed to relax branch protection for force-push).
+ - *Fine-grained PAT:* **Contents: Read and Write** (push) **and** **Administration: Read and Write** (to toggle `allow_force_pushes` on protected branches). Without Administration access the protection update is skipped with a warning and a protected-branch push may fail.
+
+ #### GitLab Token (`GITLAB_TOKEN`)
+
+ API calls made: `GET /projects` (source); plus `GET /projects/:path`,
+ `GET`/`PATCH /projects/:id/protected_branches/:branch`, `git push` (destination).
+
+ **As source (read-only)**
+ - `read_api` + `read_repository` — or the broader `api`.
+
+ **As destination**
+ - `api` — required, because relaxing a protected branch for force-push uses the write API (`PATCH .../protected_branches`); `write_repository` alone only permits `git push`, not API writes.
+ - The token's user must have the **Maintainer** or **Owner** role on the target namespace/project, or the branch-protection update and push will fail.
+
+ > If a token lacks the branch-protection permission, Holocron logs a warning (with the HTTP status and a scope hint) and continues; the subsequent push simply fails for any protected branch rather than crashing the whole run.
 
 ### Command Line Arguments
 | Flag | Default | Description |
