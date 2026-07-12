@@ -1,6 +1,32 @@
 # CHANGELOG
 
 
+## Unreleased
+
+### Bug Fixes
+
+- Raise on incomplete GitHub/GitLab repository pagination so a partial repo
+  list can no longer be mirrored as if it were complete; the sync cycle logs
+  the failure and retries next interval instead of silently skipping repos.
+- Surface the HTTP status and a token-scope hint when relaxing branch
+  protection fails, instead of collapsing every error into a generic warning.
+
+### Security
+
+- Redact embedded credentials (tokens/passwords) from git output before it is
+  written to the logs.
+
+### Documentation
+
+- Replace stream-of-consciousness comments in the GitHub provider's branch
+  protection logic and fix the stale `src/holocron.py` run command in the
+  README (now `uv run holocron`).
+
+### Chores
+
+- Stop tracking the committed `.coverage` file.
+
+
 ## v1.1.0 (2025-12-18)
 
 ### Features
