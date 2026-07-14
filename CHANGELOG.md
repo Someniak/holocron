@@ -3,6 +3,13 @@
 
 ## Unreleased
 
+### Infrastructure
+
+- Rebuild the Docker image from source with a multi-stage `uv` build that
+  installs dependencies from `uv.lock`, so the image ships the exact pinned
+  (CVE-patched) versions instead of resolving them fresh at build time. Remove
+  the unpinned `requirements.txt`.
+
 ## v1.2.0 - 2026-07-14
 
 ### Bug Fixes
