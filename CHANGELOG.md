@@ -15,6 +15,9 @@
 
 - Redact embedded credentials (tokens/passwords) from git output before it is
   written to the logs.
+- Upgrade vulnerable dependencies to resolve 8 Dependabot alerts: urllib3
+  2.7.0 (decompression-bomb and cross-origin header fixes), idna 3.18,
+  requests 2.34.2, python-dotenv 1.2.2, pygments 2.20.0, and pytest 9.1.1.
 
 ### Documentation
 
@@ -33,6 +36,9 @@
 ### Chores
 
 - Stop tracking the committed `.coverage` file.
+- Raise the minimum supported Python to 3.14 across `pyproject.toml`, the
+  Dockerfile, and the CI/nightly workflow matrices; the patched dependency
+  releases no longer support older interpreters.
 
 
 ## v1.1.0 (2025-12-18)
