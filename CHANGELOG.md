@@ -31,7 +31,10 @@
   Prepare/Publish Release workflows and release-drafter with a single
   `Release` workflow that reads the version from `CHANGELOG.md`, tags it,
   builds the GitHub Release notes from the version's section body, and
-  publishes to PyPI and GHCR. Update `RELEASE.md` to match.
+  publishes to PyPI and GHCR. Update `RELEASE.md` to match, and add a
+  project-local `/release` command that bumps `pyproject.toml` and
+  `src/holocron/config.py` alongside the CHANGELOG so all version sources
+  stay in sync.
 
 ### Chores
 
