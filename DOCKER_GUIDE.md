@@ -75,6 +75,27 @@ services:
       - ./data:/app/mirror-data
 ```
 
+## 🏗️ Building the Image
+
+The image is built from source with a multi-stage `uv` build, so it ships the
+exact dependency versions pinned in `uv.lock`. Two pipelines build it:
+
+- **GitHub Actions** publishes the image to GHCR on release (see `RELEASE.md`).
+- **GitLab CI** (`.gitlab-ci.yml`) builds the image with Kaniko on GitLab
+  runners and pushes it to Artifactory. It pushes `:latest` + a short-SHA tag on
+  the default branch, `:<tag>` + `:latest` on git tags, and validates the build
+  (no push) on merge requests. Configure these masked CI/CD variables in GitLab
+  (Settings -> CI/CD -> Variables):
+
+  | Variable | Example | Purpose |
+  |---|---|---|
+  | `ARTIFACTORY_REGISTRY` | `mycompany.jfrog.io` | Docker registry host (for auth) |
+  | `ARTIFACTORY_IMAGE` | `mycompany.jfrog.io/docker-local/holocron` | Full image path, no tag |
+  | `ARTIFACTORY_USER` | `svc-holocron` | Artifactory user / service account |
+  | `ARTIFACTORY_TOKEN` | *(masked)* | Artifactory API token or password |
+
+To build locally: `docker build -t holocron:local .`
+
 ## ⚠️ Notes
 
 - **URL Construction**: Syncing works by cloning from Source and pushing to Destination.

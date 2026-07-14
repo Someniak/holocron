@@ -1,0 +1,62 @@
+# GitLab CI: build the container image on GitLab runners and push it to
+# Artifactory. This complements the GitHub Actions release (which publishes to
+# GHCR) so the mirrored GitLab copy produces its own images.
+#
+# Builder: Kaniko (rootless, no Docker daemon / privileged runner required).
+#
+# Required CI/CD variables (Settings -> CI/CD -> Variables; mark USER/TOKEN as
+# masked, and protect them if you only build protected branches/tags):
+#
+#   ARTIFACTORY_REGISTRY  Docker registry host only, e.g. mycompany.jfrog.io
+#   ARTIFACTORY_IMAGE     Full image path WITHOUT a tag, e.g.
+#                         mycompany.jfrog.io/docker-local/holocron
+#   ARTIFACTORY_USER      Artifactory username or service account
+#   ARTIFACTORY_TOKEN     Artifactory API token or password (masked)
+#
+# Note: the Dockerfile pulls python:3.14-alpine (docker.io) and
+# ghcr.io/astral-sh/uv (ghcr.io). The runners must be able to reach those, or
+# you can proxy them through Artifactory remote repositories and adjust the
+# base-image references in the Dockerfile.
+
+stages:
+  - build
+
+# Shared setup: validate variables and write Kaniko's registry auth.
+.container-build:
+  stage: build
+  image:
+    name: gcr.io/kaniko-project/executor:v1.23.2-debug
+    entrypoint: [""]
+  before_script:
+    - |
+      for v in ARTIFACTORY_REGISTRY ARTIFACTORY_IMAGE ARTIFACTORY_USER ARTIFACTORY_TOKEN; do
+        eval "val=\$$v"
+        if [ -z "$val" ]; then
+          echo "ERROR: required CI/CD variable $v is not set."
+          exit 1
+        fi
+      done
+      mkdir -p /kaniko/.docker
+      AUTH=$(printf '%s:%s' "$ARTIFACTORY_USER" "$ARTIFACTORY_TOKEN" | base64 | tr -d '\n')
+      printf '{"auths":{"%s":{"auth":"%s"}}}' "$ARTIFACTORY_REGISTRY" "$AUTH" > /kaniko/.docker/config.json
+
+# Merge requests: build only, to validate the Dockerfile without publishing.
+build:validate:
+  extends: .container-build
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+  script:
+    - /kaniko/executor --context "$CI_PROJECT_DIR" --dockerfile "$CI_PROJECT_DIR/Dockerfile" --no-push
+
+# Default branch and tags: build and push to Artifactory.
+build:push:
+  extends: .container-build
+  rules:
+    - if: '$CI_COMMIT_TAG'
+      variables:
+        KANIKO_DESTINATIONS: "--destination $ARTIFACTORY_IMAGE:$CI_COMMIT_TAG --destination $ARTIFACTORY_IMAGE:latest"
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      variables:
+        KANIKO_DESTINATIONS: "--destination $ARTIFACTORY_IMAGE:latest --destination $ARTIFACTORY_IMAGE:$CI_COMMIT_SHORT_SHA"
+  script:
+    - /kaniko/executor --context "$CI_PROJECT_DIR" --dockerfile "$CI_PROJECT_DIR/Dockerfile" $KANIKO_DESTINATIONS
