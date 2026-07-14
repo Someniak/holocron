@@ -3,6 +3,8 @@
 
 ## Unreleased
 
+## v1.2.0 - 2026-07-14
+
 ### Bug Fixes
 
 - Raise on incomplete GitHub/GitLab repository pagination so a partial repo
