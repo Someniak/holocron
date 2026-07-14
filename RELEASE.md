@@ -1,69 +1,74 @@
 # Release Guide (Maintainers Only)
 
-This repository follows a **Release Branch** workflow. The release process is partially automated to ensure consistency and stability.
+This repository follows the **CHANGELOG-driven** release model: a single
+protected `main`, and one `Release` workflow that reads the version from
+`CHANGELOG.md`, tags it, and publishes. The `CHANGELOG.md` is the single source
+of truth for what the next version is. CI never tags by hand.
 
 ## Release Process
 
 ### 1. Prerequisite
-Ensure all feature PRs to be included in the release are merged into `main`.
 
-### 2. Prepare Release (Automated)
-Instead of manually creating branches, use the **Prepare Release** workflow:
+Ensure all feature PRs to be included in the release are merged into `main`, and
+that their changes are recorded under the `## Unreleased` heading in
+`CHANGELOG.md` (this happens automatically when you land work via `/preflight`).
 
-1.  Go to the **Actions** tab in GitHub.
-2.  Select the **Prepare Release** workflow.
-3.  Click **Run workflow**.
-4.  Enter the new version number (e.g., `1.2.0`).
+### 2. Prepare the release (`/release`)
 
-**What this does:**
-*   Creates a new branch `release/v1.2.0`.
-*   Bumps the version in `pyproject.toml` (and other files if configured).
-*   Commits and pushes the branch.
-*   Opens a Pull Request from `release/v1.2.0` to `main`.
+On a short-lived branch, run `/release` and pick the version bump (patch / minor
+/ major). It will:
 
-### 3. Verification
-CI checks will run automatically on the Pull Request. **Ensure all checks pass** before proceeding.
+- Promote `## Unreleased` in `CHANGELOG.md` to `## vX.Y.Z - YYYY-MM-DD`, leaving
+  an empty `## Unreleased` block above it.
+- Bump the version in **`pyproject.toml`** and **`src/holocron/config.py`**
+  (`__version__`) to `X.Y.Z` so all three sources agree.
+- Commit as `[docs] Update CHANGELOG for vX.Y.Z` and open a PR into `main`.
 
-In addition to unit tests, our CI pipeline runs:
-*   **Nightly Builds**: To ensure long-term stability.
-*   **Smoke Tests**:
-    *   **PyPI**: Builds the package and verifies it installs and runs in a fresh environment.
-    *   **Docker**: Builds the container and verifies it starts up correctly.
+> The `Release` workflow refuses to run if `pyproject.toml` or
+> `src/holocron/config.py` disagree with the CHANGELOG version, so keep all
+> three in sync during prep.
 
-This validates that the codebase is stable with the new version bump.
+### 3. Verify and merge
 
-### 4. Release & Publish (Manual Tag)
-Once the release branch is verified:
+CI runs on the PR (tests on Python 3.14, plus PyPI and Docker smoke tests).
+Ensure all checks pass, then **merge the release PR into `main`**.
 
-1.  **Merge** the release PR into `main`.
-2.  **Create a Tag** on `main` corresponding to the version.
-    ```bash
-    git checkout main
-    git pull
-    git tag v1.2.0
-    git push origin v1.2.0
-    ```
-    *(Alternatively, you can tag the release-branch commit directly if you prefer, but merging to main first is standard).*
+### 4. Publish (`Release` workflow)
+
+Once the release commit is on `main`:
+
+1. Go to the **Actions** tab -> **Release** workflow -> **Run workflow**
+   (`workflow_dispatch`, no inputs).
 
 **What this does:**
-*   Checks that the version matches `pyproject.toml`.
-*   Creates and pushes the git tag `v1.2.0`.
-*   Creates a GitHub Release.
-*   Triggers the build and publish steps for:
-    *   **Docker Image**: Pushes to GHCR (`ghcr.io/someniak/holocron:1.2.0` and `latest`).
-    *   **PyPI**: Publishes the package to PyPI.
 
-### Pro-Tip: Release Candidates
-If you entered a pre-release version (e.g., `1.2.0rc1`) in the **Prepare Release** step:
-1.  The system detects it as a pre-release.
-2.  Docker images are pushed *without* the `latest` tag.
-3.  The GitHub Release is marked as "Pre-release".
+- Reads the top `## vX.Y.Z` version from `CHANGELOG.md` (fails loudly if nothing
+  was prepared, or if the tag already exists).
+- Validates `pyproject.toml` and `src/holocron/config.py` match that version.
+- Creates and pushes the git tag `vX.Y.Z`.
+- Creates a **GitHub Release**, with the notes taken directly from that version's
+  `CHANGELOG.md` section body.
+- Publishes:
+  - **PyPI**: builds and publishes `holocron-sync` (trusted publishing / OIDC).
+  - **Docker**: pushes the multi-arch image to GHCR
+    (`ghcr.io/someniak/holocron:X.Y.Z` and, for final releases, `latest`).
 
-**To promote to final:**
-Simply run the **Prepare Release** workflow again with the final version (e.g., `1.2.0`). This will bump the version from `rc1` to final, create a new PR, and once merged, you can run **Publish Release**.
+### Pre-releases
 
-### 5. Automated Release Notes
-We use `release-drafter` to keep track of changes.
-*   As PRs are merged to `main`, a draft release is continuously updated on GitHub.
-*   The **Publish Release** workflow will attach these notes to the final release.
+Prepare a version containing letters (e.g. `1.2.0rc1`). The `Release` workflow
+detects it as a pre-release automatically:
 
+- The GitHub Release is marked **Pre-release**.
+- The Docker image is pushed **without** the `latest` tag.
+
+To promote to final, run `/release` again with the final version (e.g. `1.2.0`),
+merge, and dispatch `Release` once more.
+
+## Notes
+
+- Tagging and publishing are owned entirely by the `Release` workflow. **Do not
+  create tags manually** - a hand-created tag will collide with the workflow.
+- There is no separate "prepare release" workflow anymore; version prep is done
+  locally via `/release` and lands through a normal PR.
+- Release notes come from `CHANGELOG.md`, so keep the entries user-facing and
+  grouped by section (Features, Bug Fixes, Infrastructure, etc.).

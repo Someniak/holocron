@@ -22,6 +22,14 @@
   protection logic and fix the stale `src/holocron.py` run command in the
   README (now `uv run holocron`).
 
+### Infrastructure
+
+- Adopt the CHANGELOG-driven release model: replace the input-driven
+  Prepare/Publish Release workflows and release-drafter with a single
+  `Release` workflow that reads the version from `CHANGELOG.md`, tags it,
+  builds the GitHub Release notes from the version's section body, and
+  publishes to PyPI and GHCR. Update `RELEASE.md` to match.
+
 ### Chores
 
 - Stop tracking the committed `.coverage` file.
