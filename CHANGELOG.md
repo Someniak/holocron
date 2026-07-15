@@ -3,6 +3,14 @@
 
 ## Unreleased
 
+### Features
+
+- Serve the webhook listener over HTTPS when a TLS certificate and key are
+  provided (`--webhook-cert` / `--webhook-key`, or the matching env vars). In
+  Docker the certificate is auto-generated as a self-signed cert on first start
+  (openssl is bundled) and can be replaced by mounting your own into `/certs`;
+  plain `pip` installs stay HTTP-by-default and never auto-generate a cert.
+
 ## v1.3.0 - 2026-07-15
 
 ### Features

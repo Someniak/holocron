@@ -55,6 +55,8 @@ def parse_args():
     parser.add_argument("--webhook", action="store_true", default=get_bool_env("HOLOCRON_WEBHOOK"), help="Start an HTTP listener that syncs a repo when GitHub POSTs a push event")
     parser.add_argument("--webhook-port", type=int, default=int(os.environ.get("HOLOCRON_WEBHOOK_PORT", 8080)), help="Port for the webhook listener (default: 8080)")
     parser.add_argument("--webhook-path", type=str, default=os.environ.get("HOLOCRON_WEBHOOK_PATH", "/webhook"), help="URL path the webhook listener serves (default: /webhook)")
+    parser.add_argument("--webhook-cert", type=str, default=os.environ.get("HOLOCRON_WEBHOOK_CERT"), help="TLS certificate file for the webhook listener (serves HTTPS; must be paired with --webhook-key)")
+    parser.add_argument("--webhook-key", type=str, default=os.environ.get("HOLOCRON_WEBHOOK_KEY"), help="TLS private key file for the webhook listener (must be paired with --webhook-cert)")
 
     return parser.parse_args()
 

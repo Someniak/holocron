@@ -1,8 +1,11 @@
 import os
+import ssl
 import time
 import hmac
 import json
+import shutil
 import hashlib
+import subprocess
 from datetime import datetime, timezone
 from unittest.mock import patch, MagicMock
 
@@ -13,6 +16,7 @@ from holocron.webhook import (
     verify_signature,
     build_repo_from_payload,
     start_webhook_server,
+    build_ssl_context,
 )
 from holocron.__main__ import start_webhook_listener
 
@@ -212,3 +216,71 @@ def test_webhook_missing_secret_exits(mock_sync):
     with patch.dict(os.environ, {}, clear=True):
         with pytest.raises(SystemExit):
             start_webhook_listener(config, MagicMock(), MagicMock(), {})
+
+
+# --- TLS / HTTPS support ---
+
+def test_build_ssl_context_requires_both():
+    """A lone cert or key is a config error, not a silent plaintext fallback."""
+    with pytest.raises(ValueError):
+        build_ssl_context("only-cert.pem", None)
+    with pytest.raises(ValueError):
+        build_ssl_context(None, "only-key.pem")
+
+
+def test_build_ssl_context_missing_files():
+    with pytest.raises(FileNotFoundError):
+        build_ssl_context("/nope/cert.pem", "/nope/key.pem")
+
+
+@pytest.fixture
+def self_signed_cert(tmp_path):
+    """Generates a throwaway self-signed cert/key with openssl (skips if absent)."""
+    if not shutil.which("openssl"):
+        pytest.skip("openssl not available")
+    cert = tmp_path / "webhook.crt"
+    key = tmp_path / "webhook.key"
+    subprocess.run(
+        [
+            "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+            "-keyout", str(key), "-out", str(cert), "-days", "1",
+            "-subj", "/CN=localhost",
+            "-addext", "subjectAltName=DNS:localhost,IP:127.0.0.1",
+        ],
+        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    return str(cert), str(key)
+
+
+def test_build_ssl_context_valid_pair(self_signed_cert):
+    cert, key = self_signed_cert
+    ctx = build_ssl_context(cert, key)
+    assert isinstance(ctx, ssl.SSLContext)
+
+
+@pytest.mark.filterwarnings("ignore::urllib3.exceptions.InsecureRequestWarning")
+def test_https_delivery_returns_202(self_signed_cert):
+    """With cert+key, the listener serves HTTPS and accepts a signed push."""
+    cert, key = self_signed_cert
+    received = []
+    srv = start_webhook_server(
+        port=0, secret=SECRET, on_push=received.append,
+        path="/webhook", host="127.0.0.1", cert_file=cert, key_file=key,
+    )
+    try:
+        port = srv.server_address[1]
+        body = _push_body()
+        # verify=False: the cert is self-signed, so skip chain validation here.
+        r = requests.post(
+            f"https://127.0.0.1:{port}/webhook",
+            data=body,
+            headers={"X-GitHub-Event": "push", "X-Hub-Signature-256": sign(SECRET, body)},
+            timeout=5,
+            verify=False,
+        )
+        assert r.status_code == 202
+        assert len(received) == 1
+        assert received[0].name == "hook-repo"
+    finally:
+        srv.shutdown()
+        srv.server_close()

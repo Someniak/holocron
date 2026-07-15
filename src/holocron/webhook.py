@@ -10,6 +10,8 @@ thread. The HTTP request returns immediately (202) so we never hit GitHub's
 Uses only the standard library (http.server + hmac) to avoid adding a web
 framework dependency.
 """
+import os
+import ssl
 import hmac
 import json
 import hashlib
@@ -152,9 +154,35 @@ def _make_handler(secret, on_push, path):
     return WebhookHandler
 
 
-def start_webhook_server(port, secret, on_push, path="/webhook", host="0.0.0.0"):
+def build_ssl_context(cert_file, key_file):
     """
-    Starts the webhook HTTP server on a background daemon thread.
+    Builds a server-side TLS context from a cert/key pair.
+
+    Both files must be provided together and exist; a lone cert or key is a
+    configuration error (raises ValueError / FileNotFoundError) rather than a
+    silent fall-back to plaintext.
+    """
+    if bool(cert_file) != bool(key_file):
+        raise ValueError(
+            "webhook TLS needs BOTH a certificate and a key "
+            "(--webhook-cert and --webhook-key); only one was given."
+        )
+    for label, path in (("certificate", cert_file), ("key", key_file)):
+        if not os.path.isfile(path):
+            raise FileNotFoundError(f"webhook TLS {label} not found: {path}")
+
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(certfile=cert_file, keyfile=key_file)
+    return context
+
+
+def start_webhook_server(port, secret, on_push, path="/webhook", host="0.0.0.0",
+                         cert_file=None, key_file=None):
+    """
+    Starts the webhook HTTP(S) server on a background daemon thread.
+
+    If cert_file and key_file are both given, the listener serves HTTPS using a
+    self-signed or provided certificate; otherwise it serves plain HTTP.
 
     on_push(repo) is invoked for each valid push event and should return quickly
     (e.g. submit to a thread pool); it runs on the server's request thread.
@@ -164,11 +192,17 @@ def start_webhook_server(port, secret, on_push, path="/webhook", host="0.0.0.0")
     handler_cls = _make_handler(secret, on_push, path)
     server = ThreadingHTTPServer((host, port), handler_cls)
 
+    scheme = "http"
+    if cert_file or key_file:
+        context = build_ssl_context(cert_file, key_file)
+        server.socket = context.wrap_socket(server.socket, server_side=True)
+        scheme = "https"
+
     thread = threading.Thread(
         target=server.serve_forever,
         name="holocron-webhook",
         daemon=True,
     )
     thread.start()
-    logger.info(f"[webhook] Listening on http://{host}:{port}{path} for GitHub push events.")
+    logger.info(f"[webhook] Listening on {scheme}://{host}:{port}{path} for GitHub push events.")
     return server
