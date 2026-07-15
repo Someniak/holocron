@@ -12,6 +12,7 @@ from .mirror import needs_sync, sync_one_repo
 from .utils import handle_credits, print_storage_estimate
 from .providers.gitlab import GitLabProvider
 from .providers.github import GitHubProvider
+from .webhook import start_webhook_server
 
 @log_execution
 def run_sync_cycle(config: dict, source_provider, destination_provider, synced_pushes):
@@ -81,6 +82,54 @@ def run_sync_cycle(config: dict, source_provider, destination_provider, synced_p
     return sync_count
 
 
+def start_webhook_listener(config, source_provider, destination_provider, synced_pushes):
+    """
+    Starts the webhook HTTP listener and returns the server.
+
+    Push events are synced through the same sync_one_repo engine as the poll
+    loop, on a dedicated thread pool so a burst of deliveries doesn't block the
+    HTTP handler. Requires HOLOCRON_WEBHOOK_SECRET to be set.
+    """
+    secret = os.environ.get("HOLOCRON_WEBHOOK_SECRET")
+    if not secret:
+        logger.error("CRITICAL: --webhook requires HOLOCRON_WEBHOOK_SECRET to be set. Not starting listener.")
+        sys.exit(1)
+
+    # Persistent pool for webhook-triggered syncs (the poll loop uses its own
+    # per-cycle pool). Per-repo locking in sync_one_repo keeps the two in step.
+    executor = ThreadPoolExecutor(max_workers=config['concurrency'], thread_name_prefix="webhook-sync")
+
+    def on_push(repo):
+        future = executor.submit(
+            sync_one_repo,
+            repo=repo,
+            storage_path=config['storage'],
+            dry_run=config['dry_run'],
+            backup_only=config['backup_only'],
+            checkout=config['checkout'],
+            source_provider=source_provider,
+            destination_provider=destination_provider,
+        )
+
+        def _done(fut):
+            try:
+                fut.result()
+                if repo.pushed_at:
+                    synced_pushes[repo.name] = repo.pushed_at
+                logger.info(f"[{repo.name}] Webhook-triggered sync complete.")
+            except Exception as exc:
+                logger.error(f"[{repo.name}] Webhook-triggered sync failed: {exc}")
+
+        future.add_done_callback(_done)
+
+    return start_webhook_server(
+        port=config['webhook_port'],
+        secret=secret,
+        on_push=on_push,
+        path=config['webhook_path'],
+    )
+
+
 def get_provider(name, token, api_url_github, api_url_gitlab, namespace=None):
     """Factory to get the correct provider instance."""
     if name == "github":
@@ -133,10 +182,15 @@ def main():
         logger.info("!!! DRY RUN MODE ACTIVE !!!")
 
     synced_pushes = {}
-    
+
     # Convert args to a dict (or Config object) for easier passing to cycle runner
     # We could also pass args directly but we want to decouple run_sync_cycle from argparse
     config = vars(args)
+
+    # Start the webhook listener (if enabled) before the poll loop so push events
+    # are handled even while an initial full cycle is running.
+    if getattr(args, "webhook", False):
+        start_webhook_listener(config, source_provider, destination_provider, synced_pushes)
 
     while True:
         sync_count = run_sync_cycle(config, source_provider, destination_provider, synced_pushes)
@@ -148,8 +202,18 @@ def main():
 
         if not args.watch:
             break
-            
+
         time.sleep(args.interval)
+
+    # Webhook-only mode (no --watch): keep the process alive to serve deliveries
+    # after the initial one-shot sync cycle.
+    if getattr(args, "webhook", False) and not args.watch:
+        logger.info("Initial sync done. Holding open for webhook deliveries (Ctrl-C to exit).")
+        try:
+            while True:
+                time.sleep(3600)
+        except KeyboardInterrupt:
+            logger.info("Shutting down webhook listener.")
 
 if __name__ == "__main__":
     main()

@@ -1,8 +1,26 @@
 import os
 import subprocess
+import threading
 from datetime import datetime, timedelta, timezone
 from .logger import logger, log_execution
 from .utils import redact
+
+# Per-repo locks. A repo can be scheduled for sync by both the poll loop and an
+# incoming webhook at the same time; running two `git fetch`/`git push` against
+# the same bare mirror dir concurrently corrupts it. We serialize per repo name.
+_repo_locks = {}
+_repo_locks_guard = threading.Lock()
+
+
+def _get_repo_lock(name):
+    """Returns a process-wide lock unique to `name`, creating it on first use."""
+    with _repo_locks_guard:
+        lock = _repo_locks.get(name)
+        if lock is None:
+            lock = threading.Lock()
+            _repo_locks[name] = lock
+        return lock
+
 
 def needs_sync(repo, window_minutes):
     """
@@ -38,22 +56,24 @@ def sync_one_repo(repo, storage_path, dry_run=False, backup_only=False, checkout
     # 3. Create Storage Directory if needed
     os.makedirs(storage_path, exist_ok=True)
 
-    # 4. Execute Sync Steps
-    try:
-        _ensure_local_mirror(repo, repo_dir, source_url)
-        
-        if not backup_only:
-             destination_provider.prepare_push(repo)
-             _push_to_destination(repo, repo_dir, destination_url)
-        else:
-            logger.info(f"[{repo.name}] Successfully backed up locally.")
-        
-        if checkout:
-            _update_sidecar_checkout(repo, repo_dir)
-        
-    except subprocess.CalledProcessError as e:
-        # redact: e (its cmd) and e.stderr can echo the token-embedded remote URL.
-        logger.error(redact(f"ERROR syncing {repo.name}: {e}\nOutput: {e.stderr}"))
+    # 4. Execute Sync Steps (serialized per repo to keep concurrent poll- and
+    # webhook-triggered syncs from clobbering the same bare mirror).
+    with _get_repo_lock(repo.name):
+        try:
+            _ensure_local_mirror(repo, repo_dir, source_url)
+
+            if not backup_only:
+                 destination_provider.prepare_push(repo)
+                 _push_to_destination(repo, repo_dir, destination_url)
+            else:
+                logger.info(f"[{repo.name}] Successfully backed up locally.")
+
+            if checkout:
+                _update_sidecar_checkout(repo, repo_dir)
+
+        except subprocess.CalledProcessError as e:
+            # redact: e (its cmd) and e.stderr can echo the token-embedded remote URL.
+            logger.error(redact(f"ERROR syncing {repo.name}: {e}\nOutput: {e.stderr}"))
 
 def _ensure_local_mirror(repo, repo_dir, source_url):
     """Clones or fetches the local bare mirror."""

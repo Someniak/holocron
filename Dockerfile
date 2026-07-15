@@ -44,6 +44,9 @@ ENV PATH="/app/.venv/bin:$PATH"
 # Directory for mirror data.
 RUN mkdir -p mirror-data
 
+# Webhook listener port (only used when running with --webhook).
+EXPOSE 8080
+
 ENTRYPOINT ["holocron"]
 
 # Default command (can be overridden).
