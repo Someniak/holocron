@@ -3,6 +3,8 @@
 
 ## Unreleased
 
+## v1.4.0 - 2026-07-15
+
 ### Features
 
 - Serve the webhook listener over HTTPS when a TLS certificate and key are
