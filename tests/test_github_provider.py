@@ -89,3 +89,35 @@ def test_fetch_repos_with_orgs(mock_get_pages):
     assert len(repos) == 3
     names = {r.name for r in repos}
     assert names == {'u1', 'u2', 'o1'}
+
+
+# --- get_remote_url host-pinning (token exfil protection) ---
+
+def test_get_remote_url_injects_token_for_matching_host():
+    p = GitHubProvider(token="SECRET", api_url="https://api.github.com")
+    repo = Repository(name="r", clone_url="https://github.com/o/r.git")
+    url = p.get_remote_url(repo)
+    assert url == "https://oauth2:SECRET@github.com/o/r.git"
+
+
+def test_get_remote_url_refuses_foreign_host():
+    """A forged clone_url pointing elsewhere must NOT receive the token."""
+    p = GitHubProvider(token="SECRET", api_url="https://api.github.com")
+    repo = Repository(name="r", clone_url="https://attacker.tld/o/r.git")
+    with pytest.raises(ValueError):
+        p.get_remote_url(repo)
+
+
+def test_get_remote_url_refuses_non_http_scheme():
+    p = GitHubProvider(token="SECRET", api_url="https://api.github.com")
+    repo = Repository(name="r", clone_url="ext::sh -c id")
+    with pytest.raises(ValueError):
+        p.get_remote_url(repo)
+
+
+def test_get_remote_url_allows_github_enterprise_host():
+    """GHE uses a path-based API on the same host as clones."""
+    p = GitHubProvider(token="SECRET", api_url="https://ghe.corp/api/v3")
+    repo = Repository(name="r", clone_url="https://ghe.corp/o/r.git")
+    url = p.get_remote_url(repo)
+    assert url == "https://oauth2:SECRET@ghe.corp/o/r.git"
