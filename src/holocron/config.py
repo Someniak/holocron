@@ -51,6 +51,11 @@ def parse_args():
     parser.add_argument("--checkout", action="store_true", default=get_bool_env("HOLOCRON_CHECKOUT"), help="Create a checkout of the repository alongside the mirror")
     parser.add_argument("--gitlab-namespace", type=str, default=GITLAB_NAMESPACE, help="GitLab namespace (User or Group) to push to")
 
+    # Webhook listener (push-triggered syncs). Runs alongside --watch.
+    parser.add_argument("--webhook", action="store_true", default=get_bool_env("HOLOCRON_WEBHOOK"), help="Start an HTTP listener that syncs a repo when GitHub POSTs a push event")
+    parser.add_argument("--webhook-port", type=int, default=int(os.environ.get("HOLOCRON_WEBHOOK_PORT", 8080)), help="Port for the webhook listener (default: 8080)")
+    parser.add_argument("--webhook-path", type=str, default=os.environ.get("HOLOCRON_WEBHOOK_PATH", "/webhook"), help="URL path the webhook listener serves (default: /webhook)")
+
     return parser.parse_args()
 
 def validate_config(source, destination, backup_only=False):

@@ -84,6 +84,7 @@ Holocron uses environment variables for secrets:
  | `GITLAB_TOKEN` | Your GitLab Personal Access Token (api scope) | No (if `--backup-only`) |
  | `GITLAB_API_URL` | URL to your GitLab API (default: `http://gitlab.local/api/v4`) | No (if `--backup-only`) |
  | `GITHUB_API_URL` | URL to your GitHub API (default: `https://api.github.com`) | No |
+ | `HOLOCRON_WEBHOOK_SECRET` | Shared secret used to verify GitHub webhook signatures | **Yes** (if `--webhook`) |
  
  ### API Permissions
 
@@ -131,6 +132,37 @@ Holocron uses environment variables for secrets:
 | `--storage` | `./mirror-data` | Directory to store repositories |
 | `--dry-run` | False | Print what would happen without doing it |
 | `--verbose` | False | Enable detailed debug logging |
+| `--webhook` | False | Start an HTTP listener that syncs a repo on GitHub `push` events |
+| `--webhook-port` | 8080 | Port for the webhook listener |
+| `--webhook-path` | `/webhook` | URL path the listener serves |
+
+### Webhook Mode (push-triggered sync)
+
+Instead of waiting for the next poll cycle, Holocron can sync a repository the
+moment it changes. With `--webhook`, it starts a small HTTP listener that
+accepts GitHub `push` events, and syncs just the affected repo asynchronously.
+
+It runs **alongside** `--watch`, so polling remains a safety net for any missed
+deliveries. Used without `--watch`, Holocron runs one initial full sync and then
+stays up to serve deliveries.
+
+**Setup**
+
+1. Run with the listener enabled and a secret set:
+   ```bash
+   HOLOCRON_WEBHOOK_SECRET="your-random-secret" holocron --watch --webhook --webhook-port 8080
+   ```
+2. In your GitHub repo (or org) **Settings -> Webhooks -> Add webhook**:
+   - **Payload URL**: `http://your-host:8080/webhook`
+   - **Content type**: `application/json`
+   - **Secret**: the same value as `HOLOCRON_WEBHOOK_SECRET`
+   - **Events**: *Just the push event*
+
+Every delivery is authenticated via the `X-Hub-Signature-256` HMAC header;
+requests with a missing or invalid signature are rejected with `401`. Valid
+pushes return `202 Accepted` immediately (well inside GitHub's delivery timeout)
+and are synced on a background thread. Concurrent poll- and webhook-triggered
+syncs of the same repo are serialized so they never corrupt the mirror.
 
 ## Development
 

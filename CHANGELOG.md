@@ -3,12 +3,26 @@
 
 ## Unreleased
 
+### Features
+
+- Add an optional webhook listener (`--webhook`) that syncs a single repository
+  on demand when GitHub POSTs a `push` event, running alongside `--watch`
+  polling as a safety net. Deliveries are authenticated with an HMAC-SHA256
+  signature (`HOLOCRON_WEBHOOK_SECRET`), acknowledged instantly, and synced on a
+  background thread; concurrent poll- and webhook-triggered syncs of the same
+  repo are serialized so they cannot corrupt the mirror. Configurable via
+  `--webhook-port` / `--webhook-path`.
+
 ### Infrastructure
 
 - Rebuild the Docker image from source with a multi-stage `uv` build that
   installs dependencies from `uv.lock`, so the image ships the exact pinned
   (CVE-patched) versions instead of resolving them fresh at build time. Remove
   the unpinned `requirements.txt`.
+- Add a GitLab CI pipeline (`.gitlab-ci.yml`) that builds the container image
+  with Kaniko on GitLab runners and pushes it to Artifactory (default branch
+  and tags), validating the build on merge requests. Complements the GHCR
+  publish on GitHub for the mirrored GitLab copy.
 
 ## v1.2.0 - 2026-07-14
 
