@@ -96,6 +96,33 @@ exact dependency versions pinned in `uv.lock`. Two pipelines build it:
 
 To build locally: `docker build -t holocron:local .`
 
+## 🔒 Non-root user and volume permissions
+
+The image runs as an unprivileged user (`holocron`, UID `100`), not root. The
+paths the app writes to inside the image — `/app/mirror-data` and the `/certs`
+cert volume — are pre-owned by that user, so the default (anonymous) volumes and
+the auto-generated TLS cert work out of the box.
+
+If you **bind-mount a host directory** onto one of those paths, it keeps its host
+ownership, and UID `100` must be able to write to it. Otherwise git mirroring
+(to `/app/mirror-data`) or webhook cert generation (to `/certs`) will fail with
+permission errors. Fix it one of two ways:
+
+```bash
+# Option A: make the host directory writable by the container user (UID 100)
+mkdir -p ./mirror-data && sudo chown -R 100:101 ./mirror-data
+
+# Option B: run the container as your own host UID/GID (must own the mount)
+docker run -d --user "$(id -u):$(id -g)" \
+  -e GITHUB_TOKEN="..." -e GITLAB_TOKEN="..." \
+  -v "$(pwd)/mirror-data:/app/mirror-data" \
+  ghcr.io/someniak/holocron:latest
+```
+
+> If you run with `--webhook` on a bind-mounted `/certs`, that directory must be
+> writable by the running UID too — or mount a cert you generated yourself, which
+> is used as-is (never regenerated).
+
 ## ⚠️ Notes
 
 - **URL Construction**: Syncing works by cloning from Source and pushing to Destination.
