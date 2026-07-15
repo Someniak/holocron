@@ -3,6 +3,8 @@
 
 ## Unreleased
 
+## v1.3.0 - 2026-07-15
+
 ### Features
 
 - Add an optional webhook listener (`--webhook`) that syncs a single repository
