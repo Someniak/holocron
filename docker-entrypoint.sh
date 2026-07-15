@@ -6,14 +6,21 @@
 # (pip installs never run this script); on pip you supply --webhook-cert /
 # --webhook-key yourself or run plain HTTP.
 #
-# The cert lives under HOLOCRON_WEBHOOK_CERT / HOLOCRON_WEBHOOK_KEY (defaulted in
-# the Dockerfile to /certs/webhook.{crt,key}, a declared VOLUME). To use your OWN
+# The cert lives under HOLOCRON_WEBHOOK_CERT / HOLOCRON_WEBHOOK_KEY, defaulted
+# below to /certs/webhook.{crt,key} (a declared VOLUME). To use your OWN
 # certificate, mount it there (or point those env vars at it): if the cert file
 # already exists it is used as-is and never overwritten/regenerated.
 set -eu
 
-CERT="${HOLOCRON_WEBHOOK_CERT:-}"
-KEY="${HOLOCRON_WEBHOOK_KEY:-}"
+# Default the cert/key paths here rather than via Dockerfile ENV (which would
+# bake a *_KEY variable into image metadata), and export them so the holocron
+# process we exec inherits the same locations. Uses ${VAR-default} (no colon) so
+# an explicit empty override (-e HOLOCRON_WEBHOOK_CERT=) still disables TLS.
+export HOLOCRON_WEBHOOK_CERT="${HOLOCRON_WEBHOOK_CERT-/certs/webhook.crt}"
+export HOLOCRON_WEBHOOK_KEY="${HOLOCRON_WEBHOOK_KEY-/certs/webhook.key}"
+
+CERT="$HOLOCRON_WEBHOOK_CERT"
+KEY="$HOLOCRON_WEBHOOK_KEY"
 
 # Is the webhook enabled? Check the env flag and the CLI args ("$@").
 webhook_enabled() {
