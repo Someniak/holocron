@@ -3,6 +3,8 @@
 
 ## Unreleased
 
+## v1.4.1 - 2026-07-15
+
 ### Security
 
 - Validate untrusted repository fields before they reach `git` or the
