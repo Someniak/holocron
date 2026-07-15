@@ -11,6 +11,27 @@ class Repository:
     size: int = 0  # in KB
     pushed_at: Optional[datetime] = None
 
+@dataclass
+class PullRequestEvent:
+    """
+    A GitHub `pull_request` webhook, distilled to the fields the CI bridge needs.
+
+    Kept separate from Repository because a PR carries data Repository has no room
+    for: the PR number, the head/base refs, the head commit SHA (the key both the
+    GitLab pipeline and the GitHub commit status hang off), and whether the head
+    lives in a fork (untrusted code we must not run on internal runners by default).
+    """
+    action: str            # opened | synchronize | reopened | closed
+    number: int
+    repo_full_name: str    # "owner/repo" - target of the GitHub commit-status write
+    repo_name: str         # bare/short name - keys the local mirror dir & GitLab path
+    clone_url: str         # base repo clone_url (source fetch + host pinning)
+    head_sha: str          # PR head commit; GitHub status + GitLab pipeline align on it
+    head_ref: str
+    base_ref: str          # PR base branch; the GitLab MR target
+    is_fork: bool = False  # head repo != base repo
+    merged: bool = False   # only meaningful when action == "closed"
+
 class Provider(ABC):
     """Abstract base class for all providers (Source or Destination)."""
 

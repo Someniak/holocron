@@ -149,6 +149,150 @@ class GitLabProvider(Provider):
         
         return url
 
+    # --- CI bridge helpers -------------------------------------------------
+    # These drive the PR->CI->status flow: resolve the project, open/close an MR
+    # for the mirrored PR branch (which fires the merge_request_event pipeline),
+    # and read pipeline status so the caller can report it back to GitHub.
+
+    def _api_base(self):
+        """Normalizes self.api_url to a '.../api/v4' base regardless of input."""
+        base_url = self.api_url.rstrip('/')
+        if base_url.endswith('/api/v4'):
+            base_url = base_url[:-7]
+        base_url = base_url.rstrip('/')
+        return f"{base_url}/api/v4"
+
+    def _project_path(self, repo):
+        """The GitLab project path ('namespace/name' or just 'name')."""
+        if self.namespace:
+            return f"{self.namespace}/{repo.name}"
+        return repo.name
+
+    def get_project_id(self, repo):
+        """
+        Returns the numeric GitLab project id for `repo`, or None if the project
+        does not exist yet (404). Other HTTP errors propagate so the caller can
+        surface them.
+        """
+        api_base = self._api_base()
+        headers = {'Private-Token': self.token}
+        encoded_path = self._project_path(repo).replace("/", "%2F")
+        r = requests.get(f"{api_base}/projects/{encoded_path}", headers=headers, timeout=10)
+        if r.status_code == 404:
+            return None
+        r.raise_for_status()
+        return r.json().get('id')
+
+    def find_open_merge_request(self, project_id, source_branch):
+        """Returns the open MR whose source branch is `source_branch`, or None."""
+        api_base = self._api_base()
+        headers = {'Private-Token': self.token}
+        r = requests.get(
+            f"{api_base}/projects/{project_id}/merge_requests",
+            headers=headers,
+            params={'source_branch': source_branch, 'state': 'opened'},
+            timeout=10,
+        )
+        r.raise_for_status()
+        data = r.json()
+        return data[0] if data else None
+
+    def create_or_update_merge_request(self, project_id, source_branch,
+                                       target_branch, title, description=None):
+        """
+        Ensures an open MR exists from `source_branch` to `target_branch`.
+
+        Idempotent: if one is already open for that source branch it is reused
+        (dedup by source branch), so a PR `synchronize` — which only force-pushes
+        the branch and lets GitLab spawn a fresh MR pipeline — never creates a
+        duplicate MR. Returns the MR dict (has `iid` and `web_url`).
+        """
+        existing = self.find_open_merge_request(project_id, source_branch)
+        if existing:
+            return existing
+        api_base = self._api_base()
+        headers = {'Private-Token': self.token}
+        payload = {
+            'source_branch': source_branch,
+            'target_branch': target_branch,
+            'title': title,
+            'remove_source_branch': False,
+        }
+        if description:
+            payload['description'] = description
+        r = requests.post(f"{api_base}/projects/{project_id}/merge_requests",
+                          headers=headers, json=payload, timeout=10)
+        r.raise_for_status()
+        return r.json()
+
+    def close_merge_request(self, project_id, source_branch):
+        """Closes the open MR for `source_branch` (no-op if none is open)."""
+        existing = self.find_open_merge_request(project_id, source_branch)
+        if not existing:
+            return None
+        api_base = self._api_base()
+        headers = {'Private-Token': self.token}
+        r = requests.put(
+            f"{api_base}/projects/{project_id}/merge_requests/{existing['iid']}",
+            headers=headers, json={'state_event': 'close'}, timeout=10,
+        )
+        r.raise_for_status()
+        return r.json()
+
+    def get_latest_mr_pipeline(self, project_id, mr_iid):
+        """
+        Returns the newest pipeline attached to MR `mr_iid`, or None.
+
+        Preferred over get_pipeline_for_sha because a merged-results pipeline runs
+        on a synthetic merge commit whose SHA differs from the PR head SHA.
+        """
+        api_base = self._api_base()
+        headers = {'Private-Token': self.token}
+        r = requests.get(
+            f"{api_base}/projects/{project_id}/merge_requests/{mr_iid}/pipelines",
+            headers=headers, timeout=10,
+        )
+        r.raise_for_status()
+        data = r.json()
+        return data[0] if data else None
+
+    def get_pipeline_for_sha(self, project_id, sha):
+        """Fallback pipeline lookup by commit SHA (newest first), or None."""
+        api_base = self._api_base()
+        headers = {'Private-Token': self.token}
+        r = requests.get(
+            f"{api_base}/projects/{project_id}/pipelines",
+            headers=headers,
+            params={'sha': sha, 'order_by': 'id', 'sort': 'desc'},
+            timeout=10,
+        )
+        r.raise_for_status()
+        data = r.json()
+        return data[0] if data else None
+
+    def get_pipeline_status(self, project_id, pipeline_id):
+        """Returns the pipeline dict (fields incl. `status` and `web_url`)."""
+        api_base = self._api_base()
+        headers = {'Private-Token': self.token}
+        r = requests.get(
+            f"{api_base}/projects/{project_id}/pipelines/{pipeline_id}",
+            headers=headers, timeout=10,
+        )
+        r.raise_for_status()
+        return r.json()
+
+    def delete_branch(self, project_id, branch):
+        """Best-effort delete of a branch (204 success / 404 already-gone both OK)."""
+        api_base = self._api_base()
+        headers = {'Private-Token': self.token}
+        encoded = branch.replace("/", "%2F")
+        r = requests.delete(
+            f"{api_base}/projects/{project_id}/repository/branches/{encoded}",
+            headers=headers, timeout=10,
+        )
+        if r.status_code not in (204, 404):
+            r.raise_for_status()
+
     def _to_repository(self, item: dict) -> Repository:
         """Helper to convert GitLab API dict to Repository object."""
         pushed_at = None

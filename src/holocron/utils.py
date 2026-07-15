@@ -14,6 +14,20 @@ _CREDENTIAL_RE = re.compile(r"(https?://)[^/\s:@]+:[^/\s@]+@")
 # and escape the storage directory.
 _SAFE_REPO_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
+# A GitHub commit-status target is addressed as "owner/repo" and interpolated
+# straight into /repos/{full_name}/statuses/{sha}. Accept exactly two slug
+# components joined by a single '/', so a forged full_name can't inject extra
+# path segments or traversal into the API URL.
+_SAFE_REPO_FULL_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
+
+# A short git commit SHA is 7-40 hex chars; GitHub may emit up to 64 (SHA-256).
+_SAFE_SHA_RE = re.compile(r"^[0-9a-f]{7,64}$")
+
+# Characters/patterns git refuses in a ref name, plus anything that could be
+# read as a command-line option or a path traversal. Used to vet the PR base
+# branch before it becomes an MR target / API path component.
+_UNSAFE_REF_RE = re.compile(r"[\x00-\x20~^:?*\[\\]|\.\.|@\{|//")
+
 def redact(text):
     """Removes embedded URL credentials (tokens/passwords) from a string."""
     if not text:
@@ -32,6 +46,39 @@ def is_safe_repo_name(name):
         and name not in (".", "..")
         and _SAFE_REPO_NAME_RE.match(name) is not None
     )
+
+def is_safe_repo_full_name(name):
+    """
+    True if `name` is a safe "owner/repo" identifier for the GitHub status API.
+
+    Requires exactly two slug components; rejects empty parts, extra slashes,
+    and `.`/`..` traversal in either component.
+    """
+    if not isinstance(name, str) or _SAFE_REPO_FULL_NAME_RE.match(name) is None:
+        return False
+    return all(part not in (".", "..") for part in name.split("/"))
+
+def is_safe_sha(sha):
+    """True if `sha` is a plausible lowercase-hex git commit id (7-64 chars)."""
+    return isinstance(sha, str) and _SAFE_SHA_RE.match(sha) is not None
+
+def is_safe_git_ref(ref):
+    """
+    True if `ref` is safe to use as a git branch name / API path component.
+
+    Rejects control chars and whitespace, git's special chars (`~^:?*[\\`), `..`
+    traversal, `@{` reflog syntax, `//`, a leading `-` (which git would read as an
+    option), and leading/trailing `/` or `.`.
+    """
+    if not isinstance(ref, str) or not ref:
+        return False
+    if ref.startswith("-") or ref.startswith("/") or ref.endswith("/"):
+        return False
+    if ref.startswith(".") or ref.endswith("."):
+        return False
+    if ref.endswith(".lock"):
+        return False
+    return _UNSAFE_REF_RE.search(ref) is None
 
 def is_safe_clone_url(url):
     """

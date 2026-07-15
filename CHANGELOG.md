@@ -3,6 +3,22 @@
 
 ## Unreleased
 
+### Features
+
+- Add a **GitHub PR → GitLab CI → GitHub status** bridge (`--ci-bridge`, requires
+  `--webhook`). When a pull request is opened/updated on GitHub, Holocron pushes
+  the PR head to a GitLab branch (`holocron/pr-<N>`), opens/updates a GitLab merge
+  request against the PR base branch (which fires the `merge_request_event`
+  pipeline), then polls that pipeline and reports the result back onto the PR as a
+  GitHub commit status (context `holocron/gitlab-ci`, configurable). Mark that
+  context *required* in branch protection to gate merges on GitLab CI. This is the
+  right shape for an internal-only GitLab: the result is reported *outbound* from
+  Holocron, which already reaches both sides, so neither GitHub nor a GitHub Action
+  needs to reach the private runner. PRs from forks are not run by default
+  (`--ci-allow-forks` to override). New flags: `--ci-status-context`,
+  `--ci-poll-interval`, `--ci-poll-timeout`, `--ci-allow-forks`,
+  `--ci-branch-prefix` (all env-backed).
+
 ## v1.4.1 - 2026-07-15
 
 ### Security

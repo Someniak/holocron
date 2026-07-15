@@ -20,7 +20,11 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .logger import logger
-from .providers.base import Repository
+from .providers.base import Repository, PullRequestEvent
+
+# PR actions worth acting on. Others (labeled, assigned, edited, ...) are
+# acknowledged but ignored so they don't re-run CI.
+_ACTIONABLE_PR_ACTIONS = ("opened", "synchronize", "reopened", "closed")
 
 # GitHub caps webhook payloads at 25 MB. Refuse anything larger so a bad/hostile
 # Content-Length can't make us buffer unbounded data.
@@ -83,7 +87,57 @@ def build_repo_from_payload(payload: dict):
     )
 
 
-def _make_handler(secret, on_push, path):
+def build_pr_event_from_payload(payload: dict):
+    """
+    Builds a PullRequestEvent from a GitHub `pull_request` webhook payload.
+
+    Uses the bare repo `name` (matching the sync path, which keys mirror dirs and
+    GitLab paths on the short name) and the `full_name` for the status write-back.
+    Returns None if the payload lacks a field the CI bridge needs.
+    """
+    action = payload.get("action")
+    number = payload.get("number")
+    repo = payload.get("repository") or {}
+    pr = payload.get("pull_request") or {}
+    head = pr.get("head") or {}
+    base = pr.get("base") or {}
+
+    repo_full_name = repo.get("full_name")
+    repo_name = repo.get("name")
+    clone_url = repo.get("clone_url")
+    head_sha = head.get("sha")
+    head_ref = head.get("ref")
+    base_ref = base.get("ref")
+
+    if not (action and number is not None and repo_full_name and repo_name
+            and clone_url and head_sha and head_ref and base_ref):
+        return None
+
+    # The head repo is null when a fork has been deleted; treat that (and any
+    # head whose repo differs from the base repo) as a fork we don't trust.
+    head_repo = head.get("repo") or {}
+    is_fork = head_repo.get("full_name") != repo_full_name
+
+    try:
+        number = int(number)
+    except (TypeError, ValueError):
+        return None
+
+    return PullRequestEvent(
+        action=action,
+        number=number,
+        repo_full_name=repo_full_name,
+        repo_name=repo_name,
+        clone_url=clone_url,
+        head_sha=head_sha,
+        head_ref=head_ref,
+        base_ref=base_ref,
+        is_fork=is_fork,
+        merged=bool(pr.get("merged", False)),
+    )
+
+
+def _make_handler(secret, on_push, path, on_pull_request=None):
     """Builds a request handler class closed over the server's config."""
 
     class WebhookHandler(BaseHTTPRequestHandler):
@@ -151,16 +205,36 @@ def _make_handler(secret, on_push, path):
             if event == "ping":
                 self._reply(204)
                 return
-            if event != "push":
+            if event not in ("push", "pull_request"):
                 # Acknowledge other events so GitHub marks the delivery OK.
+                self._reply(204)
+                return
+            if event == "pull_request" and on_pull_request is None:
+                # CI bridge disabled: acknowledge and ignore, exactly as before.
                 self._reply(204)
                 return
 
             try:
                 payload = json.loads(body)
             except json.JSONDecodeError:
-                logger.warning("[webhook] Authenticated push had invalid JSON.")
+                logger.warning(f"[webhook] Authenticated {event} had invalid JSON.")
                 self._reply(400, b"invalid payload", content_type="text/plain; charset=utf-8")
+                return
+
+            if event == "pull_request":
+                pr = build_pr_event_from_payload(payload)
+                if pr is None:
+                    logger.warning("[webhook] pull_request event missing required fields; ignoring.")
+                    self._reply(400, b"invalid payload", content_type="text/plain; charset=utf-8")
+                    return
+                if pr.action not in _ACTIONABLE_PR_ACTIONS:
+                    # e.g. labeled/edited/assigned: nothing to run, but ack it.
+                    self._reply(204)
+                    return
+                logger.info(f"[webhook] Received pull_request '{pr.action}' #{pr.number} "
+                            f"for '{pr.repo_full_name}'; scheduling CI bridge.")
+                on_pull_request(pr)
+                self._reply(202)
                 return
 
             repo = build_repo_from_payload(payload)
@@ -209,19 +283,22 @@ def build_ssl_context(cert_file, key_file):
 
 
 def start_webhook_server(port, secret, on_push, path="/webhook", host="0.0.0.0",
-                         cert_file=None, key_file=None):
+                         cert_file=None, key_file=None, on_pull_request=None):
     """
     Starts the webhook HTTP(S) server on a background daemon thread.
 
     If cert_file and key_file are both given, the listener serves HTTPS using a
     self-signed or provided certificate; otherwise it serves plain HTTP.
 
-    on_push(repo) is invoked for each valid push event and should return quickly
-    (e.g. submit to a thread pool); it runs on the server's request thread.
+    on_push(repo) is invoked for each valid push event; on_pull_request(pr), when
+    provided, is invoked for each actionable pull_request event. Both should return
+    quickly (e.g. submit to a thread pool); they run on the server's request
+    thread. When on_pull_request is None, pull_request deliveries are acknowledged
+    and ignored.
 
     Returns the ThreadingHTTPServer so the caller can shut it down.
     """
-    handler_cls = _make_handler(secret, on_push, path)
+    handler_cls = _make_handler(secret, on_push, path, on_pull_request=on_pull_request)
     server = ThreadingHTTPServer((host, port), handler_cls)
 
     scheme = "http"

@@ -3,6 +3,7 @@ from datetime import datetime
 from urllib.parse import urlparse
 from ..logger import logger, log_execution
 from ..config import GITHUB_API_URL
+from ..utils import is_safe_repo_full_name, is_safe_sha
 from .base import Provider, Repository
 
 class GitHubProvider(Provider):
@@ -47,6 +48,66 @@ class GitHubProvider(Provider):
         if parsed.scheme == "https":
             return repo.clone_url.replace("https://", f"https://oauth2:{self.token}@", 1)
         return repo.clone_url.replace("http://", f"http://oauth2:{self.token}@", 1)
+
+    def set_commit_status(self, repo_full_name, sha, state, context,
+                          target_url=None, description=None):
+        """
+        Writes a commit status onto `sha` in `repo_full_name` ("owner/repo").
+
+        This is the CI bridge's report-back path: a status with a stable `context`
+        surfaces as a check on the PR and can be marked *required* in branch
+        protection, giving a native merge gate. (The richer Checks API needs a
+        GitHub App; the Status API works with the PAT holocron already uses.)
+
+        `state` is one of pending/success/failure/error. Host-pins the token to the
+        configured GitHub host and validates the identifiers so a forged
+        full_name/sha can't redirect the request or inject path segments. Failures
+        are non-fatal (logged with a scope hint) so a status hiccup never aborts the
+        bridge — but the caller stays responsible for not leaving a gate on pending.
+        """
+        if not self.token:
+            logger.warning("[status] No GitHub token; cannot set commit status.")
+            return
+        if not is_safe_repo_full_name(repo_full_name) or not is_safe_sha(sha):
+            logger.error(f"[status] Refusing to set status: unsafe repo/sha "
+                         f"(repo={repo_full_name!r}).")
+            return
+        if state not in ("pending", "success", "failure", "error"):
+            logger.error(f"[status] Refusing to set status: invalid state {state!r}.")
+            return
+
+        # Pin the write to the configured GitHub host: a forged webhook could carry
+        # any owner/repo, but the API URL host is ours, so credentials only ever go
+        # to it. (The full_name only selects a path on that host.)
+        api_host = (urlparse(self.api_url).hostname or "").lower()
+        if not api_host:
+            logger.error("[status] Configured GitHub API URL has no host; refusing.")
+            return
+
+        headers = {
+            'Authorization': f'token {self.token}',
+            'Accept': 'application/vnd.github+json',
+        }
+        payload = {'state': state, 'context': context}
+        if target_url:
+            payload['target_url'] = target_url
+        if description:
+            # GitHub truncates descriptions at 140 chars; keep it clean ourselves.
+            payload['description'] = description[:140]
+
+        url = f"{self.api_url}/repos/{repo_full_name}/statuses/{sha}"
+        try:
+            r = requests.post(url, headers=headers, json=payload, timeout=10)
+            r.raise_for_status()
+            logger.info(f"[{repo_full_name}] Set '{context}' status={state} on "
+                        f"{sha[:8]}.")
+        except requests.exceptions.HTTPError as e:
+            status = e.response.status_code if e.response is not None else "?"
+            hint = " (token likely missing 'repo:status' scope)" if status in (403, 404) else ""
+            logger.warning(f"[{repo_full_name}] Failed to set commit status: "
+                           f"HTTP {status}{hint}: {e}")
+        except Exception as e:
+            logger.warning(f"[{repo_full_name}] Failed to set commit status: {e}")
 
     @log_execution
     def fetch_repos(self) -> list[Repository]:

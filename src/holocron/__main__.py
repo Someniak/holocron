@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from .config import parse_args, validate_config, __author__, __license__, GITLAB_API_URL, GITHUB_API_URL
 from .logger import setup_logger, logger, log_execution
 from .mirror import needs_sync, sync_one_repo
+from .ci_bridge import handle_pull_request
 from .utils import handle_credits, print_storage_estimate
 from .providers.gitlab import GitLabProvider
 from .providers.github import GitHubProvider
@@ -83,13 +84,16 @@ def run_sync_cycle(config: dict, source_provider, destination_provider, synced_p
     return sync_count
 
 
-def start_webhook_listener(config, source_provider, destination_provider, synced_pushes):
+def start_webhook_listener(config, source_provider, destination_provider, synced_pushes,
+                           ci_github_provider=None, ci_gitlab_provider=None):
     """
     Starts the webhook HTTP listener and returns the server.
 
     Push events are synced through the same sync_one_repo engine as the poll
     loop, on a dedicated thread pool so a burst of deliveries doesn't block the
-    HTTP handler. Requires HOLOCRON_WEBHOOK_SECRET to be set.
+    HTTP handler. When the CI bridge is enabled, pull_request events are handled
+    on a *separate* pool (its pollers are long-lived and must not starve mirror
+    syncs). Requires HOLOCRON_WEBHOOK_SECRET to be set.
     """
     secret = os.environ.get("HOLOCRON_WEBHOOK_SECRET")
     if not secret:
@@ -123,6 +127,31 @@ def start_webhook_listener(config, source_provider, destination_provider, synced
 
         future.add_done_callback(_done)
 
+    # PR-driven CI bridge (optional). Separate pool: pipeline polls block a thread
+    # for minutes, so they must not share the mirror-sync pool.
+    on_pull_request = None
+    if config.get('ci_bridge') and ci_github_provider and ci_gitlab_provider:
+        ci_executor = ThreadPoolExecutor(max_workers=config['concurrency'], thread_name_prefix="ci-bridge")
+
+        def on_pull_request(pr):
+            future = ci_executor.submit(
+                handle_pull_request,
+                pr,
+                config['storage'],
+                ci_github_provider,   # source provider for cloning the PR head
+                ci_gitlab_provider,
+                ci_github_provider,   # provider for the GitHub status write-back
+                config,
+            )
+
+            def _done_pr(fut):
+                try:
+                    fut.result()
+                except Exception as exc:
+                    logger.error(f"[PR #{pr.number}] CI bridge failed: {exc}")
+
+            future.add_done_callback(_done_pr)
+
     try:
         return start_webhook_server(
             port=config['webhook_port'],
@@ -131,6 +160,7 @@ def start_webhook_listener(config, source_provider, destination_provider, synced
             path=config['webhook_path'],
             cert_file=config.get('webhook_cert'),
             key_file=config.get('webhook_key'),
+            on_pull_request=on_pull_request,
         )
     except (ValueError, FileNotFoundError, ssl.SSLError) as exc:
         logger.error(f"CRITICAL: cannot start webhook TLS listener: {exc}")
@@ -157,7 +187,11 @@ def main():
     if args.destination == "local":
         args.backup_only = True
     
-    gh_token, gl_token = validate_config(args.source, args.destination, args.backup_only)
+    gh_token, gl_token = validate_config(
+        args.source, args.destination, args.backup_only,
+        ci_bridge=getattr(args, "ci_bridge", False),
+        webhook=getattr(args, "webhook", False),
+    )
     
     # helper for tokens
     def get_token_for(p_name):
@@ -188,6 +222,15 @@ def main():
     if args.dry_run:
         logger.info("!!! DRY RUN MODE ACTIVE !!!")
 
+    # The CI bridge needs a GitHub provider (clone PR head + write status) and a
+    # GitLab provider (open MR + read pipeline) regardless of the mirror's
+    # source/destination direction, so build them explicitly.
+    ci_github_provider = None
+    ci_gitlab_provider = None
+    if getattr(args, "ci_bridge", False):
+        ci_github_provider = GitHubProvider(gh_token, GITHUB_API_URL)
+        ci_gitlab_provider = GitLabProvider(GITLAB_API_URL, gl_token, args.gitlab_namespace)
+
     synced_pushes = {}
 
     # Convert args to a dict (or Config object) for easier passing to cycle runner
@@ -197,7 +240,11 @@ def main():
     # Start the webhook listener (if enabled) before the poll loop so push events
     # are handled even while an initial full cycle is running.
     if getattr(args, "webhook", False):
-        start_webhook_listener(config, source_provider, destination_provider, synced_pushes)
+        start_webhook_listener(
+            config, source_provider, destination_provider, synced_pushes,
+            ci_github_provider=ci_github_provider,
+            ci_gitlab_provider=ci_gitlab_provider,
+        )
 
     while True:
         sync_count = run_sync_cycle(config, source_provider, destination_provider, synced_pushes)
