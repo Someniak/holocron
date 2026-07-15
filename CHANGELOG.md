@@ -3,6 +3,16 @@
 
 ## Unreleased
 
+### Features
+
+- Add an optional webhook listener (`--webhook`) that syncs a single repository
+  on demand when GitHub POSTs a `push` event, running alongside `--watch`
+  polling as a safety net. Deliveries are authenticated with an HMAC-SHA256
+  signature (`HOLOCRON_WEBHOOK_SECRET`), acknowledged instantly, and synced on a
+  background thread; concurrent poll- and webhook-triggered syncs of the same
+  repo are serialized so they cannot corrupt the mirror. Configurable via
+  `--webhook-port` / `--webhook-path`.
+
 ### Infrastructure
 
 - Rebuild the Docker image from source with a multi-stage `uv` build that
