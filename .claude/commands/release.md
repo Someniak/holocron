@@ -14,6 +14,11 @@ The `Release` workflow (`.github/workflows/release.yml`) reads the version from
 `CHANGELOG.md` and **refuses to run** if the two version files disagree with it,
 so this command bumps all three together.
 
+There is also a fourth, derived source: `uv.lock` records the project's own
+version. Bumping `pyproject.toml` makes the lock stale, and the Dockerfile builds
+with `uv sync --frozen`, which **fails on a stale lock** — so after the version
+bump this command regenerates `uv.lock` and commits it alongside the other three.
+
 ## Steps
 
 1. **Branch guard.** If on `main`, create a branch `chore/release-vX.Y.Z` (use
@@ -78,31 +83,45 @@ so this command bumps all three together.
    ```
    All three must show `X.Y.Z`.
 
-7. **Sanity-check** that the package still builds and imports with the new
+7. **Regenerate the lockfile** so `uv.lock`'s project version matches the bump
+   (the Dockerfile's `uv sync --frozen` fails on a stale lock):
+   ```
+   uv lock
+   ```
+   Then verify the lock is consistent and shows the new version:
+   ```
+   uv sync --frozen --no-dev
+   grep -A1 'name = "holocron-sync"' uv.lock | grep version
+   ```
+   `uv sync --frozen` must exit 0 and the grep must show `X.Y.Z`. If `uv sync`
+   later dropped dev tools (via `--no-dev`), run `uv sync` afterward to restore
+   them.
+
+8. **Sanity-check** that the package still builds and imports with the new
    version:
    ```
    uv run holocron --version
    ```
    It must print `X.Y.Z`. Fix any mismatch before continuing.
 
-8. **Commit** all three files together:
+9. **Commit** all four files together (the three version sources plus the lock):
    ```
-   git add pyproject.toml src/holocron/config.py CHANGELOG.md
+   git add pyproject.toml src/holocron/config.py CHANGELOG.md uv.lock
    git commit -m "[docs] Update CHANGELOG for vX.Y.Z"
    ```
 
-9. **Push and open a PR** into `main`:
+10. **Push and open a PR** into `main`:
    ```
    git push -u origin chore/release-vX.Y.Z
    gh pr create --title "Release vX.Y.Z" --base main --head chore/release-vX.Y.Z --body "..."
    ```
    Report the PR URL.
 
-10. **Do NOT tag or publish here.** Tagging and publishing are owned by the
+11. **Do NOT tag or publish here.** Tagging and publishing are owned by the
     `Release` workflow. After the PR merges to `main`, trigger it from
     Actions -> Release -> Run workflow (no inputs). See `RELEASE.md`.
 
-11. **Return to main** so the next session starts clean:
+12. **Return to main** so the next session starts clean:
     - `git switch main`
     - `git pull --ff-only`
     - Report that you've switched back.
@@ -116,6 +135,8 @@ so this command bumps all three together.
 - NEVER push to `main` directly; releases go through a PR.
 - All THREE version sources must match before committing; a mismatch makes the
   `Release` workflow fail.
+- Regenerate `uv.lock` after the bump and commit it; a stale lock breaks the
+  Dockerfile's `uv sync --frozen` build in the `Release` workflow.
 - Use present tense in the CHANGELOG ("Add", "Fix", "Remove").
 - Keep descriptions concise and user-facing — one line per change.
 - Do NOT use compound `cd ... &&` commands or `$()` substitution in Bash calls.
