@@ -26,6 +26,10 @@ from .providers.base import Repository
 # Content-Length can't make us buffer unbounded data.
 _MAX_BODY_BYTES = 25 * 1024 * 1024
 
+# Generic 404 body returned for anything that isn't a valid signed delivery.
+# Deliberately bland and server-agnostic: it names no software and matches the
+# shape of a stock "nothing here" page so a scanner learns nothing.
+_NOT_FOUND_BODY = b"<html><head><title>404 Not Found</title></head><body><h1>404 Not Found</h1></body></html>"
 
 def verify_signature(secret: str, body: bytes, signature_header: str) -> bool:
     """
@@ -83,31 +87,53 @@ def _make_handler(secret, on_push, path):
     """Builds a request handler class closed over the server's config."""
 
     class WebhookHandler(BaseHTTPRequestHandler):
+        # Suppress the identifying "Server: BaseHTTP/x Python/y" banner. This is
+        # the sole reader of server_version/sys_version, and it also covers the
+        # stdlib send_error() path (e.g. a malformed request line) that _reply's
+        # send_response_only() otherwise bypasses.
+        def version_string(self):
+            return ""
+
         # Silence BaseHTTPRequestHandler's default stderr access logging; we log
         # through our own logger instead.
         def log_message(self, fmt, *args):
             logger.debug("[webhook] " + (fmt % args))
 
-        def _reply(self, code, message):
-            body = message.encode("utf-8")
-            self.send_response(code)
-            self.send_header("Content-Type", "text/plain; charset=utf-8")
+        def _reply(self, code, body=b"", content_type=None):
+            # send_response_only (not send_response) => no Server/Date banner and
+            # no default access log line; we control every emitted header.
+            self.send_response_only(code)
+            if content_type:
+                self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
-            self.wfile.write(body)
+            # Never write a body for HEAD, and none is needed for 204.
+            if body and self.command != "HEAD":
+                self.wfile.write(body)
+
+        def _not_here(self):
+            """Uniform, unidentifiable 404 — the same response an empty server
+            gives for any unknown path. Used for every request that isn't a
+            valid, correctly-signed webhook delivery, so a probe cannot tell the
+            listener (or its path) apart from nothing at all."""
+            self._reply(404, _NOT_FOUND_BODY, content_type="text/html; charset=utf-8")
 
         def do_POST(self):
+            # Everything up to and including signature verification is a "does
+            # this look like an authenticated delivery?" gate. Any failure here
+            # is indistinguishable on the wire from a nonexistent endpoint: the
+            # real reason is logged server-side, the client just sees a 404.
             if self.path.split("?", 1)[0] != path:
-                self._reply(404, "not found")
+                self._not_here()
                 return
 
             try:
                 length = int(self.headers.get("Content-Length", 0))
             except ValueError:
-                self._reply(400, "invalid Content-Length")
+                self._not_here()
                 return
             if length <= 0 or length > _MAX_BODY_BYTES:
-                self._reply(400, "invalid body size")
+                self._not_here()
                 return
 
             body = self.rfile.read(length)
@@ -115,41 +141,47 @@ def _make_handler(secret, on_push, path):
             # Authenticate every delivery before parsing anything untrusted.
             signature = self.headers.get("X-Hub-Signature-256", "")
             if not verify_signature(secret, body, signature):
-                logger.warning("[webhook] Rejected delivery: invalid or missing signature.")
-                self._reply(401, "invalid signature")
+                logger.warning("[webhook] Rejected unauthenticated request (returning 404).")
+                self._not_here()
                 return
 
+            # From here on the caller proved knowledge of the secret, so it is a
+            # genuine GitHub delivery: meaningful status codes are safe to return.
             event = self.headers.get("X-GitHub-Event", "")
             if event == "ping":
-                self._reply(200, "pong")
+                self._reply(204)
                 return
             if event != "push":
                 # Acknowledge other events so GitHub marks the delivery OK.
-                self._reply(204, "")
+                self._reply(204)
                 return
 
             try:
                 payload = json.loads(body)
             except json.JSONDecodeError:
-                self._reply(400, "invalid JSON")
+                logger.warning("[webhook] Authenticated push had invalid JSON.")
+                self._reply(400, b"invalid payload", content_type="text/plain; charset=utf-8")
                 return
 
             repo = build_repo_from_payload(payload)
             if repo is None:
                 logger.warning("[webhook] Push event missing repository name/clone_url; ignoring.")
-                self._reply(400, "missing repository fields")
+                self._reply(400, b"invalid payload", content_type="text/plain; charset=utf-8")
                 return
 
             logger.info(f"[webhook] Received push for '{repo.name}'; scheduling sync.")
             on_push(repo)
-            self._reply(202, "accepted")
+            self._reply(202)
 
-        def do_GET(self):
-            # Cheap liveness/health endpoint.
-            if self.path.split("?", 1)[0] == path:
-                self._reply(200, "holocron webhook listener")
-            else:
-                self._reply(404, "not found")
+        # Any method other than POST — GET/HEAD or an exotic verb — routes to the
+        # same bland 404. Catching the whole do_* namespace (rather than a
+        # per-verb whitelist) means unusual verbs can't fall through to the
+        # stdlib's 501 "Unsupported method", which would both fingerprint the
+        # server and leak the Server/Date headers _not_here() suppresses.
+        def __getattr__(self, name):
+            if name.startswith("do_"):
+                return self._not_here
+            raise AttributeError(name)
 
     return WebhookHandler
 

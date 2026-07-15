@@ -62,6 +62,11 @@ docker run -d \
   ghcr.io/someniak/holocron
 ```
 
+> The container runs as an unprivileged user (UID `100`), not root. If you
+> **bind-mount** a host directory onto `/app/mirror-data` (or `/certs` for
+> webhook TLS), it must be writable by that UID — `chown -R 100:101 <dir>` or run
+> with `--user "$(id -u):$(id -g)"`. See the [Docker Guide](DOCKER_GUIDE.md#-non-root-user-and-volume-permissions).
+
 For full configuration options, environment variables, and Docker Compose examples, please refer to the **[Docker Guide](DOCKER_GUIDE.md)**.
 
 
@@ -161,11 +166,15 @@ stays up to serve deliveries.
    - **Secret**: the same value as `HOLOCRON_WEBHOOK_SECRET`
    - **Events**: *Just the push event*
 
-Every delivery is authenticated via the `X-Hub-Signature-256` HMAC header;
-requests with a missing or invalid signature are rejected with `401`. Valid
+Every delivery is authenticated via the `X-Hub-Signature-256` HMAC header. Valid
 pushes return `202 Accepted` immediately (well inside GitHub's delivery timeout)
 and are synced on a background thread. Concurrent poll- and webhook-triggered
 syncs of the same repo are serialized so they never corrupt the mirror.
+
+Anything that isn't a validly-signed delivery — a missing/invalid signature, a
+wrong path or method, a plain browser `GET` — receives a uniform, unbranded
+`404`, and the listener does not send a `Server:` banner. This avoids
+advertising to scanners that a webhook endpoint is here.
 
 #### TLS / HTTPS
 
@@ -202,6 +211,13 @@ the generated cert's hostname with `HOLOCRON_WEBHOOK_CN` (default `holocron`).
 > webhook. For public repos, prefer a real certificate or a TLS-terminating
 > reverse proxy in front of Holocron; self-signed is best suited to self-hosted
 > GitHub Enterprise or internal networks.
+
+> **Restricting access to GitHub's IPs:** since deliveries only ever come from
+> GitHub, restrict the port at your host/network firewall to GitHub's published
+> webhook source ranges (the `hooks` field of <https://api.github.com/meta>), or
+> keep the listener off the public internet entirely (reverse proxy / tunnel /
+> VPN). A firewall `DROP` is also the only way to make the port itself appear
+> closed to scanners — the app can't hide an open listening socket.
 
 ## Development
 

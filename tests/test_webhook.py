@@ -109,7 +109,9 @@ def test_valid_push_returns_202_and_triggers(server):
     assert received[0].name == "hook-repo"
 
 
-def test_invalid_signature_returns_401(server):
+def test_invalid_signature_returns_404_not_401(server):
+    """Unauthenticated requests look like a nonexistent endpoint (404), not a
+    401 that would advertise an HMAC-protected webhook is here."""
     base, received = server
     body = _push_body()
     r = requests.post(
@@ -118,11 +120,11 @@ def test_invalid_signature_returns_401(server):
         headers={"X-GitHub-Event": "push", "X-Hub-Signature-256": sign("wrong", body)},
         timeout=5,
     )
-    assert r.status_code == 401
+    assert r.status_code == 404
     assert received == []
 
 
-def test_ping_event_returns_200(server):
+def test_ping_event_returns_204(server):
     base, received = server
     body = b"{}"
     r = requests.post(
@@ -131,7 +133,7 @@ def test_ping_event_returns_200(server):
         headers={"X-GitHub-Event": "ping", "X-Hub-Signature-256": sign(SECRET, body)},
         timeout=5,
     )
-    assert r.status_code == 200
+    assert r.status_code == 204
     assert received == []
 
 
@@ -146,6 +148,46 @@ def test_wrong_path_returns_404(server):
     )
     assert r.status_code == 404
     assert received == []
+
+
+# --- Anti-fingerprinting: unauthenticated probes learn nothing ---
+
+def test_get_does_not_reveal_software(server):
+    """GET on the webhook path must not announce holocron or return 200."""
+    base, received = server
+    r = requests.get(f"{base}/webhook", timeout=5)
+    assert r.status_code == 404
+    assert "holocron" not in r.text.lower()
+    assert received == []
+
+
+def test_no_server_banner_header(server):
+    """No 'Server: BaseHTTP/x Python/y' banner that fingerprints the stack."""
+    base, _ = server
+    r = requests.get(f"{base}/webhook", timeout=5)
+    server_hdr = r.headers.get("Server", "")
+    assert "python" not in server_hdr.lower()
+    assert "basehttp" not in server_hdr.lower()
+
+
+def test_unsupported_method_returns_404_not_501(server):
+    """Probe verbs get a bland 404, not the stdlib's 501 'Unsupported method' --
+    including exotic/non-standard verbs, which the do_* catch-all also covers."""
+    base, received = server
+    for method in ("PUT", "DELETE", "OPTIONS", "PATCH", "HEAD", "TRACE", "BREW"):
+        r = requests.request(method, f"{base}/webhook", timeout=5)
+        assert r.status_code == 404, f"{method} returned {r.status_code}"
+    assert received == []
+
+
+def test_probe_responses_are_uniform(server):
+    """A known path and a random path return identical status + body, so a
+    scanner cannot distinguish the webhook path from any other."""
+    base, _ = server
+    r_known = requests.get(f"{base}/webhook", timeout=5)
+    r_random = requests.get(f"{base}/some-random-path", timeout=5)
+    assert r_known.status_code == r_random.status_code == 404
+    assert r_known.text == r_random.text
 
 
 # --- End-to-end: HTTP delivery drives the real sync engine (via __main__) ---

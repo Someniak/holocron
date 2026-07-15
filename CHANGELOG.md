@@ -3,6 +3,27 @@
 
 ## Unreleased
 
+### Security
+
+- Validate untrusted repository fields before they reach `git` or the
+  filesystem. A repo name is now confined to a safe slug (no path separators or
+  `..` traversal) and a clone URL must be `http(s)` — rejecting git's `ext::`
+  transport (arbitrary command execution), `file://`/`ssh://`, and option-like
+  values. Enforced at the single sync chokepoint, covering both the poll and
+  webhook paths.
+- Pin the GitHub token to the configured GitHub host. A forged clone URL
+  pointing at another host (e.g. `https://attacker.tld/...`) is now refused
+  instead of having the OAuth token attached and sent there, closing a
+  credential-exfiltration vector.
+- Stop the webhook listener from fingerprinting itself to scanners. Any request
+  that is not a validly-signed delivery now gets a uniform, unbranded `404`
+  (previously a `401`/health page that advertised the endpoint), the `Server:`
+  banner naming Python/BaseHTTP is suppressed, and unsupported methods return
+  `404` instead of the stdlib's `501`.
+- Harden the Docker image: it now runs as an unprivileged `holocron` user
+  instead of root, and the webhook TLS key path is set at runtime by the
+  entrypoint rather than baked into image metadata via `ENV`.
+
 ## v1.4.0 - 2026-07-15
 
 ### Features

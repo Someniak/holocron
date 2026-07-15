@@ -1,5 +1,6 @@
 import requests
 from datetime import datetime
+from urllib.parse import urlparse
 from ..logger import logger, log_execution
 from ..config import GITHUB_API_URL
 from .base import Provider, Repository
@@ -9,10 +10,43 @@ class GitHubProvider(Provider):
         self.token = token
         self.api_url = api_url
 
+    def _allowed_clone_hosts(self):
+        """
+        Hosts the GitHub token may be sent to, derived from the configured API
+        URL. Accepts the API host and, for github.com SaaS, its api-stripped
+        form (api.github.com -> github.com); GitHub Enterprise uses a path-based
+        API on the same host, so the host is accepted as-is.
+        """
+        api_host = (urlparse(self.api_url).hostname or "").lower()
+        hosts = {api_host} if api_host else set()
+        if api_host.startswith("api."):
+            hosts.add(api_host[len("api."):])
+        return hosts
+
     def get_remote_url(self, repo: Repository) -> str:
-        """Constructs the authenticated clone URL."""
-        # Dataclass field access
-        return repo.clone_url.replace("https://", f"https://oauth2:{self.token}@")
+        """
+        Constructs the authenticated clone URL.
+
+        The OAuth token is pinned to the configured GitHub host: if the repo's
+        clone URL points anywhere else (e.g. a forged webhook payload with
+        clone_url=https://attacker.tld/...), this raises ValueError instead of
+        leaking the token to that host.
+        """
+        parsed = urlparse(repo.clone_url)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            raise ValueError(f"unsupported clone URL for {repo.name!r}")
+
+        if parsed.hostname.lower() not in self._allowed_clone_hosts():
+            raise ValueError(
+                f"clone host {parsed.hostname!r} does not match the configured "
+                f"GitHub host; refusing to attach credentials"
+            )
+
+        if not self.token:
+            return repo.clone_url
+        if parsed.scheme == "https":
+            return repo.clone_url.replace("https://", f"https://oauth2:{self.token}@", 1)
+        return repo.clone_url.replace("http://", f"http://oauth2:{self.token}@", 1)
 
     @log_execution
     def fetch_repos(self) -> list[Repository]:

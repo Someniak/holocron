@@ -3,7 +3,7 @@ import subprocess
 import threading
 from datetime import datetime, timedelta, timezone
 from .logger import logger, log_execution
-from .utils import redact
+from .utils import redact, is_safe_repo_name, is_safe_clone_url
 
 # Per-repo locks. A repo can be scheduled for sync by both the poll loop and an
 # incoming webhook at the same time; running two `git fetch`/`git push` against
@@ -38,14 +38,29 @@ def needs_sync(repo, window_minutes):
 
 @log_execution
 def sync_one_repo(repo, storage_path, dry_run=False, backup_only=False, checkout=False, source_provider=None, destination_provider=None):
+    # 0. Validate untrusted repository fields before they reach the filesystem
+    # or `git`. `repo.name` is used as a path component and `repo.clone_url` is
+    # handed to `git clone`; a crafted name (path traversal) or clone URL (git's
+    # `ext::` transport => command execution) would otherwise be dangerous. This
+    # is the single chokepoint every sync path (poll + webhook) funnels through.
+    if not is_safe_repo_name(repo.name) or not is_safe_clone_url(repo.clone_url):
+        logger.error(f"Refusing to sync repository: unsafe name or clone URL (name={repo.name!r}).")
+        return
+
     repo_dir = os.path.join(storage_path, f"{repo.name}.git")
-    
-    # 1. Construct Secure URLs
-    source_url = source_provider.get_remote_url(repo)
-    
-    destination_url = None
-    if not backup_only and destination_provider:
-        destination_url = destination_provider.get_remote_url(repo)
+
+    # 1. Construct Secure URLs. get_remote_url pins credentials to the
+    # configured host and raises if the repo's URL points elsewhere (e.g. a
+    # forged payload trying to exfiltrate the token) -- refuse rather than sync.
+    try:
+        source_url = source_provider.get_remote_url(repo)
+
+        destination_url = None
+        if not backup_only and destination_provider:
+            destination_url = destination_provider.get_remote_url(repo)
+    except ValueError as exc:
+        logger.error(redact(f"Refusing to sync '{repo.name}': {exc}"))
+        return
 
     # 2. Dry Run Check
     if dry_run:

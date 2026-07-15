@@ -22,10 +22,13 @@ WORKDIR /app
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 
-# Install the project itself against the locked environment.
+# Install the project itself against the locked environment. --no-editable
+# copies the package into site-packages instead of linking to ./src, so the
+# runtime image doesn't depend on the source tree (and its permissions) being
+# readable by the unprivileged user.
 COPY README.md ./
 COPY src ./src
-RUN uv sync --frozen --no-dev
+RUN uv sync --frozen --no-dev --no-editable
 
 # ---- Runtime stage ----------------------------------------------------------
 FROM python:3.14-alpine
@@ -43,20 +46,31 @@ COPY --from=build /app /app
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
-# Put the venv's console scripts (holocron) on PATH.
-ENV PATH="/app/.venv/bin:$PATH"
+# Put the venv's console scripts (holocron) on PATH, and give git/tools a
+# writable HOME under the unprivileged user created below.
+ENV PATH="/app/.venv/bin:$PATH" \
+    HOME=/home/holocron
 
-# Default location of the webhook TLS cert/key. Mount your own cert here (or
-# override these paths) to replace the auto-generated self-signed certificate.
-ENV HOLOCRON_WEBHOOK_CERT=/certs/webhook.crt \
-    HOLOCRON_WEBHOOK_KEY=/certs/webhook.key
+# Run as an unprivileged user instead of root. Create it and pre-own the paths
+# the app writes to at runtime -- the mirror data and the TLS cert directory --
+# BEFORE declaring the volume, because changes to a volume path made after the
+# VOLUME instruction are discarded (the cert volume would otherwise be root-owned
+# and the entrypoint could not write the generated certificate to it).
+RUN addgroup -S holocron \
+    && adduser -S -G holocron -h /home/holocron holocron \
+    && mkdir -p /app/mirror-data /certs \
+    && chown -R holocron:holocron /app/mirror-data /certs /home/holocron
+
+# Webhook TLS cert/key default to /certs/webhook.{crt,key}; the entrypoint sets
+# those paths (not ENV, to keep the *_KEY var out of image metadata). Mount your
+# own cert into this volume to replace the auto-generated self-signed one.
 VOLUME ["/certs"]
 
-# Directory for mirror data.
-RUN mkdir -p mirror-data
-
-# Webhook listener port (only used when running with --webhook).
+# Webhook listener port (only used when running with --webhook; >1024 so the
+# unprivileged user can bind it).
 EXPOSE 8080
+
+USER holocron
 
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 

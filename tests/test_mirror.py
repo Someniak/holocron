@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 from holocron.mirror import needs_sync, sync_one_repo
 from holocron.providers.base import Repository
-from holocron.utils import redact
+from holocron.utils import redact, is_safe_repo_name, is_safe_clone_url
 
 
 def test_redact_strips_oauth_token():
@@ -145,7 +145,7 @@ def test_sync_one_repo_redacts_token_in_error(mock_logger, mock_exists, mock_mak
 @patch("holocron.mirror.logger")
 def test_sync_one_repo_checkout_failure(mock_logger, mock_exists, mock_makedirs, mock_run):
     # Test failure during checkout update
-    repo = Repository(name='checkout-fail', clone_url='url')
+    repo = Repository(name='checkout-fail', clone_url='https://github.com/u/checkout-fail.git')
     source_provider = MagicMock()
     source_provider.get_remote_url.return_value = "url"
     
@@ -168,7 +168,7 @@ def test_sync_one_repo_checkout_failure(mock_logger, mock_exists, mock_makedirs,
 @patch("os.path.exists")
 @patch("holocron.mirror.logger")
 def test_sync_one_repo_dry_run(mock_logger, mock_exists, mock_makedirs, mock_run):
-    repo = Repository(name='dry-repo', clone_url='url')
+    repo = Repository(name='dry-repo', clone_url='https://github.com/u/dry-repo.git')
     source_provider = MagicMock()
     source_provider.get_remote_url.return_value = "url"
     destination_provider = MagicMock()
@@ -186,7 +186,7 @@ def test_sync_one_repo_dry_run(mock_logger, mock_exists, mock_makedirs, mock_run
 @patch("os.path.exists")
 @patch("holocron.mirror.logger")
 def test_sync_one_repo_full_flow_success(mock_logger, mock_exists, mock_makedirs, mock_run):
-    repo = Repository(name='repo', clone_url='url')
+    repo = Repository(name='repo', clone_url='https://github.com/u/repo.git')
     source_provider = MagicMock()
     source_provider.get_remote_url.return_value = "src_url"
     destination_provider = MagicMock()
@@ -205,8 +205,62 @@ def test_sync_one_repo_full_flow_success(mock_logger, mock_exists, mock_makedirs
     # 4. Checkout Pull
     
     cmds = [call[0][0] for call in mock_run.call_args_list]
-    
+
     assert any("fetch" in cmd for cmd in cmds)
     assert any("remote" in cmd for cmd in cmds)
     assert any("push" in cmd for cmd in cmds)
     assert any("pull" in cmd for cmd in cmds)
+
+
+# --- Untrusted repository-field validation ---
+
+def test_is_safe_repo_name():
+    for good in ("my-repo", ".github", "a.b_c", "Repo123", "x"):
+        assert is_safe_repo_name(good), good
+    for bad in ("", ".", "..", "../etc", "a/b", "a\\b", "a b", "a\x00b", None, 123):
+        assert not is_safe_repo_name(bad), bad
+
+
+def test_is_safe_clone_url():
+    for good in ("https://github.com/o/r.git", "http://gitlab.local/o/r.git"):
+        assert is_safe_clone_url(good), good
+    for bad in (
+        "ext::sh -c id",          # git ext:: transport => command execution
+        "file:///etc/passwd",     # local file transport
+        "ssh://git@host/r.git",   # ssh transport
+        "git://host/r.git",       # unauthenticated git transport
+        "-oProxyCommand=evil",    # parsed by git as an option
+        "/local/path",            # no scheme
+        "",
+        None,
+    ):
+        assert not is_safe_clone_url(bad), bad
+
+
+@patch("subprocess.run")
+@patch("os.makedirs")
+@patch("holocron.mirror.logger")
+def test_sync_one_repo_refuses_ext_transport(mock_logger, mock_makedirs, mock_run):
+    """A crafted clone_url (ext:: => RCE) must never reach git."""
+    repo = Repository(name="evil", clone_url="ext::sh -c 'touch /tmp/pwned'")
+    source_provider = MagicMock()
+
+    sync_one_repo(repo, storage_path="/tmp/mirror", backup_only=True, source_provider=source_provider)
+
+    mock_run.assert_not_called()
+    source_provider.get_remote_url.assert_not_called()
+    assert mock_logger.error.called
+
+
+@patch("subprocess.run")
+@patch("os.makedirs")
+@patch("holocron.mirror.logger")
+def test_sync_one_repo_refuses_path_traversal_name(mock_logger, mock_makedirs, mock_run):
+    """A crafted repo name (path traversal) must never reach git/the filesystem."""
+    repo = Repository(name="../../etc/evil", clone_url="https://github.com/o/r.git")
+    source_provider = MagicMock()
+
+    sync_one_repo(repo, storage_path="/tmp/mirror", backup_only=True, source_provider=source_provider)
+
+    mock_run.assert_not_called()
+    assert mock_logger.error.called
