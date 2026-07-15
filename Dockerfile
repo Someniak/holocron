@@ -30,16 +30,27 @@ RUN uv sync --frozen --no-dev
 # ---- Runtime stage ----------------------------------------------------------
 FROM python:3.14-alpine
 
-# git is required at runtime for mirroring.
-RUN apk add --no-cache git
+# git is required at runtime for mirroring; openssl generates the self-signed
+# webhook TLS certificate in the entrypoint.
+RUN apk add --no-cache git openssl
 
 WORKDIR /app
 
 # Bring in the populated virtualenv and the app source from the build stage.
 COPY --from=build /app /app
 
+# Entrypoint auto-generates the webhook TLS cert when the listener is enabled.
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
 # Put the venv's console scripts (holocron) on PATH.
 ENV PATH="/app/.venv/bin:$PATH"
+
+# Default location of the webhook TLS cert/key. Mount your own cert here (or
+# override these paths) to replace the auto-generated self-signed certificate.
+ENV HOLOCRON_WEBHOOK_CERT=/certs/webhook.crt \
+    HOLOCRON_WEBHOOK_KEY=/certs/webhook.key
+VOLUME ["/certs"]
 
 # Directory for mirror data.
 RUN mkdir -p mirror-data
@@ -47,7 +58,7 @@ RUN mkdir -p mirror-data
 # Webhook listener port (only used when running with --webhook).
 EXPOSE 8080
 
-ENTRYPOINT ["holocron"]
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 
 # Default command (can be overridden).
 CMD ["--watch", "--interval", "60"]

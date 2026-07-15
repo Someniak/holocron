@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import os
+import ssl
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -122,12 +123,18 @@ def start_webhook_listener(config, source_provider, destination_provider, synced
 
         future.add_done_callback(_done)
 
-    return start_webhook_server(
-        port=config['webhook_port'],
-        secret=secret,
-        on_push=on_push,
-        path=config['webhook_path'],
-    )
+    try:
+        return start_webhook_server(
+            port=config['webhook_port'],
+            secret=secret,
+            on_push=on_push,
+            path=config['webhook_path'],
+            cert_file=config.get('webhook_cert'),
+            key_file=config.get('webhook_key'),
+        )
+    except (ValueError, FileNotFoundError, ssl.SSLError) as exc:
+        logger.error(f"CRITICAL: cannot start webhook TLS listener: {exc}")
+        sys.exit(1)
 
 
 def get_provider(name, token, api_url_github, api_url_gitlab, namespace=None):

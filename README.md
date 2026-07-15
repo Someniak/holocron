@@ -85,6 +85,7 @@ Holocron uses environment variables for secrets:
  | `GITLAB_API_URL` | URL to your GitLab API (default: `http://gitlab.local/api/v4`) | No (if `--backup-only`) |
  | `GITHUB_API_URL` | URL to your GitHub API (default: `https://api.github.com`) | No |
  | `HOLOCRON_WEBHOOK_SECRET` | Shared secret used to verify GitHub webhook signatures | **Yes** (if `--webhook`) |
+ | `HOLOCRON_WEBHOOK_CERT` / `HOLOCRON_WEBHOOK_KEY` | TLS cert/key for the webhook listener (auto-generated in Docker) | No |
  
  ### API Permissions
 
@@ -135,6 +136,8 @@ Holocron uses environment variables for secrets:
 | `--webhook` | False | Start an HTTP listener that syncs a repo on GitHub `push` events |
 | `--webhook-port` | 8080 | Port for the webhook listener |
 | `--webhook-path` | `/webhook` | URL path the listener serves |
+| `--webhook-cert` | _(none)_ | TLS certificate file — serves HTTPS (pair with `--webhook-key`) |
+| `--webhook-key` | _(none)_ | TLS private key file (pair with `--webhook-cert`) |
 
 ### Webhook Mode (push-triggered sync)
 
@@ -163,6 +166,42 @@ requests with a missing or invalid signature are rejected with `401`. Valid
 pushes return `202 Accepted` immediately (well inside GitHub's delivery timeout)
 and are synced on a background thread. Concurrent poll- and webhook-triggered
 syncs of the same repo are serialized so they never corrupt the mirror.
+
+#### TLS / HTTPS
+
+The listener serves plain HTTP by default. To serve **HTTPS**, pass a certificate
+and key (they must be provided together):
+
+```bash
+HOLOCRON_WEBHOOK_SECRET="..." holocron --watch --webhook \
+  --webhook-cert /certs/webhook.crt --webhook-key /certs/webhook.key
+```
+
+**In Docker this is automatic.** When the webhook is enabled, the container
+entrypoint generates a self-signed certificate at `/certs/webhook.crt` on first
+start (openssl is bundled in the image). To **replace** it with your own
+certificate, mount it over that path (a declared volume) — an existing cert is
+used as-is and never regenerated:
+
+```bash
+docker run -d \
+  -e GITHUB_TOKEN="..." -e GITLAB_TOKEN="..." \
+  -e HOLOCRON_WEBHOOK_SECRET="your-random-secret" \
+  -e HOLOCRON_WEBHOOK=true -e HOLOCRON_WATCH=true \
+  -p 8443:8080 \
+  -v "$(pwd)/certs:/certs" \
+  -v "$(pwd)/mirror-data:/app/mirror-data" \
+  ghcr.io/someniak/holocron
+```
+
+Override the cert paths with `HOLOCRON_WEBHOOK_CERT` / `HOLOCRON_WEBHOOK_KEY`, and
+the generated cert's hostname with `HOLOCRON_WEBHOOK_CN` (default `holocron`).
+
+> **Note on self-signed certs and github.com:** public GitHub rejects a
+> self-signed endpoint unless you tick *"Disable SSL verification"* on the
+> webhook. For public repos, prefer a real certificate or a TLS-terminating
+> reverse proxy in front of Holocron; self-signed is best suited to self-hosted
+> GitHub Enterprise or internal networks.
 
 ## Development
 
