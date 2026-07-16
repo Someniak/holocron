@@ -1,25 +1,51 @@
-# GitLab CI: build the container image on GitLab runners and push it to
-# Artifactory. This complements the GitHub Actions release (which publishes to
-# GHCR) so the mirrored GitLab copy produces its own images.
+# GitLab CI for the GitHub-mirrored copy of Holocron.
 #
-# Builder: Kaniko (rootless, no Docker daemon / privileged runner required).
+# Two concerns:
+#   1. Build the container image with Kaniko and push it to Artifactory
+#      (default branch + tags), validating the Dockerfile on branches / MRs.
+#   2. Report the pipeline result back to the GitHub PR as a commit status,
+#      so a PR opened on a mirrored branch gets a native, gate-able check.
 #
-# Required CI/CD variables (Settings -> CI/CD -> Variables; mark USER/TOKEN as
-# masked, and protect them if you only build protected branches/tags):
+# Holocron mirrors GitHub -> this GitLab (including every branch). Pushing a
+# branch here starts a branch pipeline; because GitHub keys PR checks on the
+# head commit SHA (which the mirror preserves), the status this pipeline writes
+# on $CI_COMMIT_SHA shows up on any PR whose head is that commit. No GitHub
+# webhook, merge request, or polling is needed -- the runner reports outbound.
 #
-#   ARTIFACTORY_REGISTRY  Docker registry host only, e.g. mycompany.jfrog.io
-#   ARTIFACTORY_IMAGE     Full image path WITHOUT a tag, e.g.
-#                         mycompany.jfrog.io/docker-local/holocron
-#   ARTIFACTORY_USER      Artifactory username or service account
-#   ARTIFACTORY_TOKEN     Artifactory API token or password (masked)
+# Required CI/CD variables (Settings -> CI/CD -> Variables):
+#
+#   Container build (mark USER/TOKEN masked; protect if only building protected refs):
+#     ARTIFACTORY_REGISTRY  Docker registry host only, e.g. mycompany.jfrog.io
+#     ARTIFACTORY_IMAGE     Full image path WITHOUT a tag, e.g.
+#                           mycompany.jfrog.io/docker-local/holocron
+#     ARTIFACTORY_USER      Artifactory username or service account
+#     ARTIFACTORY_TOKEN     Artifactory API token or password (masked)
+#
+#   GitHub status reporting (optional -- status jobs skip themselves if unset):
+#     GITHUB_STATUS_TOKEN   GitHub token with the 'repo:status' scope (masked).
+#                           Must be available to the branches you want gated, so
+#                           do NOT mark it "protected" if you gate feature
+#                           branches -- keep it masked and mind that any branch
+#                           pipeline can read it.
+#     GITHUB_STATUS_REPO    The GitHub repo to report on, "owner/repo"
+#                           (e.g. Someniak/holocron). Needed because the GitLab
+#                           namespace may differ from the GitHub owner.
 #
 # Note: the Dockerfile pulls python:3.14-alpine (docker.io) and
 # ghcr.io/astral-sh/uv (ghcr.io). The runners must be able to reach those, or
 # you can proxy them through Artifactory remote repositories and adjust the
 # base-image references in the Dockerfile.
 
+variables:
+  GITHUB_API_URL: "https://api.github.com"
+  # The commit-status context. Mark this exact name a required check in the
+  # GitHub branch-protection rule to make GitLab CI a merge gate.
+  GITHUB_STATUS_CONTEXT: "holocron/gitlab-ci"
+
 stages:
   - build
+
+# --- Container build ---------------------------------------------------------
 
 # Shared setup: validate variables and write Kaniko's registry auth.
 .container-build:
@@ -40,11 +66,14 @@ stages:
       AUTH=$(printf '%s:%s' "$ARTIFACTORY_USER" "$ARTIFACTORY_TOKEN" | base64 | tr -d '\n')
       printf '{"auths":{"%s":{"auth":"%s"}}}' "$ARTIFACTORY_REGISTRY" "$AUTH" > /kaniko/.docker/config.json
 
-# Merge requests: build only, to validate the Dockerfile without publishing.
+# Branches (incl. PR heads) and merge requests: build only, to validate the
+# Dockerfile without publishing. Running on branch pushes is what produces the
+# pipeline a mirrored PR head reports on.
 build:validate:
   extends: .container-build
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH && $CI_COMMIT_BRANCH != $CI_DEFAULT_BRANCH'
   script:
     - /kaniko/executor --context "$CI_PROJECT_DIR" --dockerfile "$CI_PROJECT_DIR/Dockerfile" --no-push
 
@@ -60,3 +89,59 @@ build:push:
         KANIKO_DESTINATIONS: "--destination $ARTIFACTORY_IMAGE:latest --destination $ARTIFACTORY_IMAGE:$CI_COMMIT_SHORT_SHA"
   script:
     - /kaniko/executor --context "$CI_PROJECT_DIR" --dockerfile "$CI_PROJECT_DIR/Dockerfile" $KANIKO_DESTINATIONS
+
+# --- GitHub commit-status reporting ------------------------------------------
+#
+# Three jobs write the status on the pushed commit: `pending` at the very start
+# (.pre), then exactly one of `success` / `failure` at the very end (.post),
+# selected by the pipeline outcome via `when: on_success` / `when: on_failure`.
+# They are allow_failure so a status hiccup can never turn a green build red,
+# and they no-op unless both GITHUB_STATUS_TOKEN and GITHUB_STATUS_REPO are set.
+
+.github-status:
+  image: curlimages/curl:8.11.1   # swap for an Artifactory-proxied image if needed
+  allow_failure: true
+  before_script:
+    - |
+      post_status() {
+        # $1 = state (pending|success|failure), $2 = description
+        if [ -z "$GITHUB_STATUS_TOKEN" ] || [ -z "$GITHUB_STATUS_REPO" ]; then
+          echo "GITHUB_STATUS_TOKEN / GITHUB_STATUS_REPO not set; skipping GitHub status."
+          return 0
+        fi
+        code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+          -H "Authorization: token $GITHUB_STATUS_TOKEN" \
+          -H "Accept: application/vnd.github+json" \
+          "$GITHUB_API_URL/repos/$GITHUB_STATUS_REPO/statuses/$CI_COMMIT_SHA" \
+          -d "{\"state\":\"$1\",\"context\":\"$GITHUB_STATUS_CONTEXT\",\"target_url\":\"$CI_PIPELINE_URL\",\"description\":\"$2\"}")
+        echo "GitHub status '$1' -> HTTP $code"
+        # 201 Created is success; anything else is surfaced but non-fatal.
+        [ "$code" = "201" ]
+      }
+
+github:pending:
+  extends: .github-status
+  stage: .pre
+  rules:
+    - if: '$GITHUB_STATUS_TOKEN && $CI_COMMIT_BRANCH'
+      when: always
+  script:
+    - post_status pending "GitLab pipeline running"
+
+github:success:
+  extends: .github-status
+  stage: .post
+  rules:
+    - if: '$GITHUB_STATUS_TOKEN && $CI_COMMIT_BRANCH'
+      when: on_success
+  script:
+    - post_status success "GitLab pipeline passed"
+
+github:failure:
+  extends: .github-status
+  stage: .post
+  rules:
+    - if: '$GITHUB_STATUS_TOKEN && $CI_COMMIT_BRANCH'
+      when: on_failure
+  script:
+    - post_status failure "GitLab pipeline failed"

@@ -5,26 +5,16 @@
 
 ### Features
 
-- Add a **GitHub PR → GitLab CI → GitHub status** bridge (`--ci-bridge`, requires
-  `--webhook`). When a pull request is opened/updated on GitHub, Holocron pushes
-  the PR head to a GitLab branch (`holocron/pr-<N>`), opens/updates a GitLab merge
-  request against the PR base branch (which fires the `merge_request_event`
-  pipeline), then polls that pipeline and reports the result back onto the PR as a
-  GitHub commit status (context `holocron/gitlab-ci`, configurable). Mark that
-  context *required* in branch protection to gate merges on GitLab CI. This is the
-  right shape for an internal-only GitLab: the result is reported *outbound* from
-  Holocron, which already reaches both sides, so neither GitHub nor a GitHub Action
-  needs to reach the private runner. PRs from forks are not run by default
-  (`--ci-allow-forks` to override). New flags: `--ci-status-context`,
-  `--ci-poll-interval`, `--ci-poll-timeout`, `--ci-allow-forks`,
-  `--ci-branch-prefix` (all env-backed).
-- Add a push-driven CI mode (`--ci-on-push`) that needs only the `push` webhook —
-  no pull-request events. On each branch push Holocron pushes the branch to GitLab
-  (starting a branch pipeline) and reports the result as a commit status on the
-  pushed commit; a PR opened on that branch shows the check automatically, since
-  GitHub keys PR checks on the head SHA. Only branches pushed to your own repo
-  reach it, so fork code never runs. Can be used alongside or instead of
-  `--ci-bridge` (shared `holocron/gitlab-ci` status context).
+- Report the mirrored GitLab CI result back to GitHub as a commit status, so a
+  GitHub pull request can be gated on GitLab CI. The `.gitlab-ci.yml` pipeline now
+  runs on branch pushes (not just merge requests / the default branch) and posts
+  `pending`/`success`/`failure` to the GitHub commit-status API on `$CI_COMMIT_SHA`
+  (context `holocron/gitlab-ci`). Because GitHub keys a PR's checks on its head
+  SHA — which the mirror preserves — the check appears on any PR opened on the
+  branch, with no inbound access to GitLab, no merge requests, and no polling: the
+  status is pushed outbound from the runner. Opt in by setting the
+  `GITHUB_STATUS_TOKEN` (scope `repo:status`) and `GITHUB_STATUS_REPO` CI/CD
+  variables; the status jobs no-op until both are present.
 
 ## v1.4.1 - 2026-07-15
 

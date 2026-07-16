@@ -11,44 +11,6 @@ class Repository:
     size: int = 0  # in KB
     pushed_at: Optional[datetime] = None
 
-@dataclass
-class PullRequestEvent:
-    """
-    A GitHub `pull_request` webhook, distilled to the fields the CI bridge needs.
-
-    Kept separate from Repository because a PR carries data Repository has no room
-    for: the PR number, the head/base refs, the head commit SHA (the key both the
-    GitLab pipeline and the GitHub commit status hang off), and whether the head
-    lives in a fork (untrusted code we must not run on internal runners by default).
-    """
-    action: str            # opened | synchronize | reopened | closed
-    number: int
-    repo_full_name: str    # "owner/repo" - target of the GitHub commit-status write
-    repo_name: str         # bare/short name - keys the local mirror dir & GitLab path
-    clone_url: str         # base repo clone_url (source fetch + host pinning)
-    head_sha: str          # PR head commit; GitHub status + GitLab pipeline align on it
-    head_ref: str
-    base_ref: str          # PR base branch; the GitLab MR target
-    is_fork: bool = False  # head repo != base repo
-    merged: bool = False   # only meaningful when action == "closed"
-
-@dataclass
-class PushEvent:
-    """
-    A GitHub `push` webhook, distilled for the push-driven CI mode.
-
-    Unlike the PR bridge this needs no PR number or base branch: it runs CI for a
-    pushed branch head in isolation and reports the result on that commit SHA. A
-    PR opened on the branch later shows the status automatically, since GitHub
-    keys PR checks on the head SHA.
-    """
-    repo_full_name: str    # "owner/repo" - target of the GitHub commit-status write
-    repo_name: str         # bare/short name - keys the local mirror dir & GitLab path
-    clone_url: str         # base repo clone_url (source fetch + host pinning)
-    branch: str            # short branch name (ref without refs/heads/)
-    after: str             # new head commit of the branch
-    deleted: bool = False  # branch-delete push (after is all zeros) -> nothing to run
-
 class Provider(ABC):
     """Abstract base class for all providers (Source or Destination)."""
 

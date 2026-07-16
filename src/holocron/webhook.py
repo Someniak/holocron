@@ -20,14 +20,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .logger import logger
-from .providers.base import Repository, PullRequestEvent, PushEvent
-
-# A deleted branch pushes an all-zero "after" SHA.
-_ZERO_SHA = "0" * 40
-
-# PR actions worth acting on. Others (labeled, assigned, edited, ...) are
-# acknowledged but ignored so they don't re-run CI.
-_ACTIONABLE_PR_ACTIONS = ("opened", "synchronize", "reopened", "closed")
+from .providers.base import Repository
 
 # GitHub caps webhook payloads at 25 MB. Refuse anything larger so a bad/hostile
 # Content-Length can't make us buffer unbounded data.
@@ -90,91 +83,7 @@ def build_repo_from_payload(payload: dict):
     )
 
 
-def build_pr_event_from_payload(payload: dict):
-    """
-    Builds a PullRequestEvent from a GitHub `pull_request` webhook payload.
-
-    Uses the bare repo `name` (matching the sync path, which keys mirror dirs and
-    GitLab paths on the short name) and the `full_name` for the status write-back.
-    Returns None if the payload lacks a field the CI bridge needs.
-    """
-    action = payload.get("action")
-    number = payload.get("number")
-    repo = payload.get("repository") or {}
-    pr = payload.get("pull_request") or {}
-    head = pr.get("head") or {}
-    base = pr.get("base") or {}
-
-    repo_full_name = repo.get("full_name")
-    repo_name = repo.get("name")
-    clone_url = repo.get("clone_url")
-    head_sha = head.get("sha")
-    head_ref = head.get("ref")
-    base_ref = base.get("ref")
-
-    if not (action and number is not None and repo_full_name and repo_name
-            and clone_url and head_sha and head_ref and base_ref):
-        return None
-
-    # The head repo is null when a fork has been deleted; treat that (and any
-    # head whose repo differs from the base repo) as a fork we don't trust.
-    head_repo = head.get("repo") or {}
-    is_fork = head_repo.get("full_name") != repo_full_name
-
-    try:
-        number = int(number)
-    except (TypeError, ValueError):
-        return None
-
-    return PullRequestEvent(
-        action=action,
-        number=number,
-        repo_full_name=repo_full_name,
-        repo_name=repo_name,
-        clone_url=clone_url,
-        head_sha=head_sha,
-        head_ref=head_ref,
-        base_ref=base_ref,
-        is_fork=is_fork,
-        merged=bool(pr.get("merged", False)),
-    )
-
-
-def build_push_event_from_payload(payload: dict):
-    """
-    Builds a PushEvent from a GitHub `push` webhook payload.
-
-    Returns None for anything that isn't an actionable branch push — tag pushes
-    (refs/tags/*) and payloads missing required fields. Branch *deletions* are
-    returned with deleted=True so the caller can choose to ignore them.
-    """
-    ref = payload.get("ref") or ""
-    if not ref.startswith("refs/heads/"):
-        return None  # tags and other refs are not branch CI
-
-    repo = payload.get("repository") or {}
-    repo_full_name = repo.get("full_name")
-    repo_name = repo.get("name")
-    clone_url = repo.get("clone_url")
-    after = payload.get("after")
-
-    if not (repo_full_name and repo_name and clone_url and after):
-        return None
-
-    branch = ref[len("refs/heads/"):]
-    deleted = bool(payload.get("deleted")) or after == _ZERO_SHA
-
-    return PushEvent(
-        repo_full_name=repo_full_name,
-        repo_name=repo_name,
-        clone_url=clone_url,
-        branch=branch,
-        after=after,
-        deleted=deleted,
-    )
-
-
-def _make_handler(secret, on_push, path, on_pull_request=None, on_push_ci=None):
+def _make_handler(secret, on_push, path):
     """Builds a request handler class closed over the server's config."""
 
     class WebhookHandler(BaseHTTPRequestHandler):
@@ -242,36 +151,16 @@ def _make_handler(secret, on_push, path, on_pull_request=None, on_push_ci=None):
             if event == "ping":
                 self._reply(204)
                 return
-            if event not in ("push", "pull_request"):
+            if event != "push":
                 # Acknowledge other events so GitHub marks the delivery OK.
-                self._reply(204)
-                return
-            if event == "pull_request" and on_pull_request is None:
-                # CI bridge disabled: acknowledge and ignore, exactly as before.
                 self._reply(204)
                 return
 
             try:
                 payload = json.loads(body)
             except json.JSONDecodeError:
-                logger.warning(f"[webhook] Authenticated {event} had invalid JSON.")
+                logger.warning("[webhook] Authenticated push had invalid JSON.")
                 self._reply(400, b"invalid payload", content_type="text/plain; charset=utf-8")
-                return
-
-            if event == "pull_request":
-                pr = build_pr_event_from_payload(payload)
-                if pr is None:
-                    logger.warning("[webhook] pull_request event missing required fields; ignoring.")
-                    self._reply(400, b"invalid payload", content_type="text/plain; charset=utf-8")
-                    return
-                if pr.action not in _ACTIONABLE_PR_ACTIONS:
-                    # e.g. labeled/edited/assigned: nothing to run, but ack it.
-                    self._reply(204)
-                    return
-                logger.info(f"[webhook] Received pull_request '{pr.action}' #{pr.number} "
-                            f"for '{pr.repo_full_name}'; scheduling CI bridge.")
-                on_pull_request(pr)
-                self._reply(202)
                 return
 
             repo = build_repo_from_payload(payload)
@@ -282,17 +171,6 @@ def _make_handler(secret, on_push, path, on_pull_request=None, on_push_ci=None):
 
             logger.info(f"[webhook] Received push for '{repo.name}'; scheduling sync.")
             on_push(repo)
-
-            # Push-driven CI (optional): report a GitLab pipeline result on the
-            # pushed commit. Runs alongside the mirror sync; branch deletions and
-            # non-branch pushes carry nothing to test.
-            if on_push_ci is not None:
-                push_event = build_push_event_from_payload(payload)
-                if push_event is not None and not push_event.deleted:
-                    logger.info(f"[webhook] Scheduling push CI for '{push_event.repo_full_name}' "
-                                f"@ {push_event.branch}.")
-                    on_push_ci(push_event)
-
             self._reply(202)
 
         # Any method other than POST — GET/HEAD or an exotic verb — routes to the
@@ -331,25 +209,19 @@ def build_ssl_context(cert_file, key_file):
 
 
 def start_webhook_server(port, secret, on_push, path="/webhook", host="0.0.0.0",
-                         cert_file=None, key_file=None, on_pull_request=None,
-                         on_push_ci=None):
+                         cert_file=None, key_file=None):
     """
     Starts the webhook HTTP(S) server on a background daemon thread.
 
     If cert_file and key_file are both given, the listener serves HTTPS using a
     self-signed or provided certificate; otherwise it serves plain HTTP.
 
-    on_push(repo) is invoked for each valid push event; on_pull_request(pr), when
-    provided, is invoked for each actionable pull_request event; on_push_ci(push),
-    when provided, is invoked for each branch push (alongside on_push) to drive
-    push-triggered CI. All should return quickly (e.g. submit to a thread pool);
-    they run on the server's request thread. When on_pull_request/on_push_ci is
-    None, those paths are skipped.
+    on_push(repo) is invoked for each valid push event and should return quickly
+    (e.g. submit to a thread pool); it runs on the server's request thread.
 
     Returns the ThreadingHTTPServer so the caller can shut it down.
     """
-    handler_cls = _make_handler(secret, on_push, path, on_pull_request=on_pull_request,
-                                on_push_ci=on_push_ci)
+    handler_cls = _make_handler(secret, on_push, path)
     server = ThreadingHTTPServer((host, port), handler_cls)
 
     scheme = "http"

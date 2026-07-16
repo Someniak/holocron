@@ -37,7 +37,7 @@ While a simple script works for one repo, managing hundreds requires a robust to
     - **Local Disk**: Create a local-only backup archive without needing a second Git server.
 - **Parallel Syncing**: Sync multiple repositories concurrently for maximum speed.
 - **Continuous Watch Mode**: Polls for changes and syncs only when necessary.
-- **CI Bridge**: Trigger GitLab CI from a GitHub pull request and report the pipeline result back onto the PR as a native, gate-able status check — ideal when your GitLab is internal-only. See [CI Bridge](#ci-bridge-github-pr--gitlab-ci--github-status).
+- **GitLab CI gate for GitHub PRs**: the mirrored GitLab pipeline reports its result back onto the GitHub PR as a required-able status check — no inbound access to GitLab needed. See [GitLab CI status on GitHub PRs](#gitlab-ci-status-on-github-prs).
 - **Sidecar Checkout**: Creates a bare mirror (`.git` folder) for safety AND an optional viewable checkout for easy browsing.
 - **Dockerized**: Runs as a lightweight container.
 
@@ -144,13 +144,6 @@ Holocron uses environment variables for secrets:
 | `--webhook-path` | `/webhook` | URL path the listener serves |
 | `--webhook-cert` | _(none)_ | TLS certificate file — serves HTTPS (pair with `--webhook-key`) |
 | `--webhook-key` | _(none)_ | TLS private key file (pair with `--webhook-cert`) |
-| `--ci-bridge` | False | On a GitHub PR, trigger GitLab CI and report the result back as a GitHub status check (requires `--webhook`) |
-| `--ci-on-push` | False | On every branch push, trigger a GitLab branch pipeline and report the result as a commit status — no PR events needed (requires `--webhook`) |
-| `--ci-status-context` | `holocron/gitlab-ci` | GitHub commit-status context name for the CI gate |
-| `--ci-poll-interval` | 10 | Seconds between GitLab pipeline status polls |
-| `--ci-poll-timeout` | 1800 | Give up polling a pipeline after this many seconds |
-| `--ci-allow-forks` | False | Run CI for PRs opened from forks (off by default — forks run untrusted code on your runners) |
-| `--ci-branch-prefix` | `holocron/pr-` | Prefix for the GitLab branch a PR head is mirrored onto |
 
 ### Webhook Mode (push-triggered sync)
 
@@ -227,97 +220,47 @@ the generated cert's hostname with `HOLOCRON_WEBHOOK_CN` (default `holocron`).
 > VPN). A firewall `DROP` is also the only way to make the port itself appear
 > closed to scanners — the app can't hide an open listening socket.
 
-### CI Bridge (GitHub PR → GitLab CI → GitHub status)
+## GitLab CI status on GitHub PRs
 
-When your mirror lives on an **internal-only** GitLab, a GitHub Action can't reach
-it to trigger CI, and GitLab can't post a status back to a PR it doesn't know
-about. Holocron sits on both sides, so it can bridge the two. With `--ci-bridge`
-(which requires `--webhook`), every GitHub pull request is handled like this:
+When Holocron mirrors a repo to a self-hosted GitLab, you can have **GitLab CI
+gate GitHub pull requests** without any inbound access to GitLab and without
+Holocron polling anything. Holocron's only job is what it already does — mirror
+every branch. The rest lives in `.gitlab-ci.yml`:
 
-1. The PR head (already in the mirror as `refs/pull/<N>/head`) is force-pushed to a
-   GitLab branch `holocron/pr-<N>`.
-2. Holocron opens (or reuses) a GitLab **merge request** from that branch to the
-   PR's base branch — which fires your `merge_request_event` pipeline in
-   `.gitlab-ci.yml`.
-3. Holocron sets a **`pending`** commit status on the PR, polls the pipeline, then
-   sets **`success`/`failure`** with a link to the GitLab pipeline.
+1. A push of a branch to GitLab (which the mirror does) starts a **branch
+   pipeline**.
+2. The pipeline reports its own result back to GitHub via the commit-status API
+   — `pending` at the start, then `success`/`failure` at the end — writing to
+   `$CI_COMMIT_SHA`.
+3. Because GitHub keys a PR's checks on its **head commit SHA** (which the mirror
+   preserves), a PR opened on that branch shows the check automatically.
 
-The status context is `holocron/gitlab-ci` (configurable). Add it to your branch's
-**required status checks** to make GitLab CI a merge gate. Closing the PR closes
-the GitLab MR and deletes the branch.
+Mark the `holocron/gitlab-ci` status context as a **required check** in the
+GitHub branch-protection rule to make it a merge gate.
 
-```bash
-GITHUB_TOKEN="..." GITLAB_TOKEN="..." HOLOCRON_WEBHOOK_SECRET="..." \
-  holocron --watch --webhook --ci-bridge
-```
+**Why report from the CI job (not from Holocron):** the status is pushed
+*outbound from the GitLab runner* to `api.github.com`, so it works whenever the
+runner has GitHub egress — no inbound path to your internal GitLab is needed, and
+Holocron never has to poll a pipeline or hold CI in its own process.
 
-**Requirements**
+**Setup** (GitLab project → Settings → CI/CD → Variables):
 
-- Both `GITHUB_TOKEN` and `GITLAB_TOKEN` are required regardless of mirror
-  direction. The GitHub token needs the **`repo:status`** scope (to write commit
-  statuses); the GitLab token needs **`api`** scope and at least **Maintainer** on
-  the mirrored project (to open MRs and read pipelines).
-- Configure the GitHub webhook to also deliver **`Pull requests`** events (in
-  addition to `Pushes`).
-- The mirrored project must already exist on GitLab (a normal sync creates it), and
-  the PR's base branch must be mirrored (it is, since Holocron mirrors all
-  branches).
+| Variable | Purpose |
+| :--- | :--- |
+| `GITHUB_STATUS_TOKEN` | GitHub token with the `repo:status` scope (mark **masked**). |
+| `GITHUB_STATUS_REPO` | The GitHub repo to report on, `owner/repo` (the GitLab namespace may differ from the GitHub owner). |
 
-**Forks are not run by default.** A fork PR would execute untrusted code on your
-runners; Holocron marks such PRs' status `error` unless you pass `--ci-allow-forks`.
-Keep your GitLab CI/CD variables **protected/masked** so branch pipelines can't read
-them.
+The status jobs no-op when those aren't set, so they're safe to ship before you
+configure them. A branch-scoped GitHub token can only touch commit statuses, so
+the blast radius if it leaks is small — but note it must **not** be a *protected*
+CI/CD variable if you gate feature branches (protected variables are withheld from
+unprotected-branch pipelines), which means any branch pipeline can read it. If
+that exposure is unacceptable for your runners, report the status from Holocron
+instead (it can hold the token out of CI) — ask and we can wire that path.
 
-> **Optional — make the gate reflect your code.** The stock `.gitlab-ci.yml` only
-> builds the container on an MR. To have the required check exercise the Python code
-> too, add a lightweight MR-only job, e.g.:
->
-> ```yaml
-> test:pytest:
->   stage: build
->   image: python:3.14-alpine
->   rules:
->     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
->   script:
->     - pip install uv && uv sync --all-extras && uv run pytest
-> ```
-
-#### Push mode (no PR events)
-
-`--ci-on-push` is a simpler alternative that needs **only** the `push` webhook —
-no `Pull requests` event, no merge requests. On every branch push Holocron pushes
-the branch to GitLab (starting a **branch pipeline**) and sets a commit status on
-the pushed commit. Because a GitHub PR shows whatever statuses exist on its head
-commit, a PR opened on that branch later displays the check automatically — you get
-the same gate without ever subscribing to PR events.
-
-```bash
-GITHUB_TOKEN="..." GITLAB_TOKEN="..." HOLOCRON_WEBHOOK_SECRET="..." \
-  holocron --watch --webhook --ci-on-push
-```
-
-Trade-offs vs `--ci-bridge`:
-
-- **Simpler + safer**: only your own repo's branches trigger it, so fork code never
-  runs; there is no MR lifecycle to manage.
-- **Runs on every branch push** (not just PR branches) — scope it with GitLab CI
-  `rules:` (branch patterns, `changes:`) if that's too much.
-- **No merged-results**: a branch pipeline tests the head in isolation, not merged
-  with the base. Use `--ci-bridge` if you need "passes once merged with `main`".
-- Requires a branch-push rule in `.gitlab-ci.yml`, since the stock config only runs
-  on merge requests and the default branch:
-  ```yaml
-  test:branch:
-    stage: build
-    image: python:3.14-alpine
-    rules:
-      - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH != $CI_DEFAULT_BRANCH'
-    script:
-      - pip install uv && uv sync --all-extras && uv run pytest
-  ```
-
-`--ci-bridge` and `--ci-on-push` can be enabled independently or together (they
-share the `holocron/gitlab-ci` status context).
+> **Requires GitHub egress from the runners.** If your runners can only reach
+> Artifactory / internal mirrors, they can't POST to `api.github.com`; in that
+> case Holocron must report the status outbound instead.
 
 ## Development
 
