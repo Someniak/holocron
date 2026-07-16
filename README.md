@@ -149,7 +149,14 @@ Holocron uses environment variables for secrets:
 
 Instead of waiting for the next poll cycle, Holocron can sync a repository the
 moment it changes. With `--webhook`, it starts a small HTTP listener that
-accepts GitHub `push` events, and syncs just the affected repo asynchronously.
+accepts GitHub `push` and `pull_request` events, and syncs just the affected
+repo asynchronously.
+
+Reacting to `pull_request` events (the `opened`, `synchronize`, and `reopened`
+actions) means a PR opened or updated on GitHub triggers a sync straight away —
+useful for running CI on the mirrored side. Holocron does **not** create any
+merge request or branch on the destination; it just refreshes the mirror, which
+already carries the PR head refs (`refs/pull/*`, including fork PRs).
 
 It runs **alongside** `--watch`, so polling remains a safety net for any missed
 deliveries. Used without `--watch`, Holocron runs one initial full sync and then
@@ -165,7 +172,9 @@ stays up to serve deliveries.
    - **Payload URL**: `http://your-host:8080/webhook`
    - **Content type**: `application/json`
    - **Secret**: the same value as `HOLOCRON_WEBHOOK_SECRET`
-   - **Events**: *Just the push event*
+   - **Events**: select *Let me select individual events* and tick **Pushes**
+     and **Pull requests** (or keep *Just the push event* if you only want
+     push-triggered syncs)
 
 Every delivery is authenticated via the `X-Hub-Signature-256` HMAC header. Valid
 pushes return `202 Accepted` immediately (well inside GitHub's delivery timeout)

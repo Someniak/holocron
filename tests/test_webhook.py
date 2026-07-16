@@ -116,6 +116,55 @@ def test_valid_push_returns_202_and_triggers(server):
     assert received[0].name == "hook-repo"
 
 
+def _pull_request_body(action="opened"):
+    return json.dumps({
+        "action": action,
+        "number": 7,
+        "repository": {"name": "hook-repo", "clone_url": "https://github.com/u/hook-repo.git"},
+    }).encode()
+
+
+def test_pull_request_opened_returns_202_and_triggers(server):
+    base, received = server
+    body = _pull_request_body("opened")
+    r = requests.post(
+        f"{base}/webhook",
+        data=body,
+        headers={"X-GitHub-Event": "pull_request", "X-Hub-Signature-256": sign(SECRET, body)},
+        timeout=5,
+    )
+    assert r.status_code == 202
+    assert len(received) == 1
+    assert received[0].name == "hook-repo"
+
+
+def test_pull_request_synchronize_triggers(server):
+    base, received = server
+    body = _pull_request_body("synchronize")
+    r = requests.post(
+        f"{base}/webhook",
+        data=body,
+        headers={"X-GitHub-Event": "pull_request", "X-Hub-Signature-256": sign(SECRET, body)},
+        timeout=5,
+    )
+    assert r.status_code == 202
+    assert len(received) == 1
+
+
+def test_pull_request_irrelevant_action_returns_204(server):
+    """A pull_request action that doesn't change the head set is acked, not synced."""
+    base, received = server
+    body = _pull_request_body("labeled")
+    r = requests.post(
+        f"{base}/webhook",
+        data=body,
+        headers={"X-GitHub-Event": "pull_request", "X-Hub-Signature-256": sign(SECRET, body)},
+        timeout=5,
+    )
+    assert r.status_code == 204
+    assert received == []
+
+
 def test_invalid_signature_returns_404_not_401(server):
     """Unauthenticated requests look like a nonexistent endpoint (404), not a
     401 that would advertise an HMAC-protected webhook is here."""

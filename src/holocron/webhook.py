@@ -1,9 +1,10 @@
 """
-Webhook listener for push-triggered syncs.
+Webhook listener for push- and pull-request-triggered syncs.
 
-GitHub can POST a `push` event to Holocron whenever a repository changes. Instead
-of waiting for the next poll cycle, we verify the delivery, build a Repository
-from the payload, and hand it straight to the existing sync engine on a worker
+GitHub can POST a `push` event (whenever a repository changes) or a
+`pull_request` event (opened/synchronize/reopened) to Holocron. Instead of
+waiting for the next poll cycle, we verify the delivery, build a Repository from
+the payload, and hand it straight to the existing sync engine on a worker
 thread. The HTTP request returns immediately (202) so we never hit GitHub's
 ~10s delivery timeout.
 
@@ -155,25 +156,39 @@ def _make_handler(secret, on_push, path):
             if event == "ping":
                 self._reply(204)
                 return
-            if event != "push":
-                # Acknowledge other events so GitHub marks the delivery OK.
+            # We sync on `push` and on `pull_request` (so a PR being opened or
+            # updated refreshes the mirror even when the branch push itself was
+            # missed, and so fork PRs -- whose head arrives as refs/pull/* -- get
+            # mirrored too). Every other event is acknowledged with 204 so GitHub
+            # still marks the delivery OK.
+            if event not in ("push", "pull_request"):
                 self._reply(204)
                 return
 
             try:
                 payload = json.loads(body)
             except json.JSONDecodeError:
-                logger.warning("[webhook] Authenticated push had invalid JSON.")
+                logger.warning(f"[webhook] Authenticated {event} had invalid JSON.")
                 self._reply(400, b"invalid payload", content_type="text/plain; charset=utf-8")
                 return
+
+            # A pull_request delivery fires for many actions (labeled, assigned,
+            # closed, ...). Only the ones that change the head commit set are
+            # worth a sync; the rest are acknowledged (204) without work.
+            if event == "pull_request":
+                action = payload.get("action")
+                if action not in ("opened", "synchronize", "reopened"):
+                    logger.debug(f"[webhook] Ignoring pull_request action '{action}'.")
+                    self._reply(204)
+                    return
 
             repo = build_repo_from_payload(payload)
             if repo is None:
-                logger.warning("[webhook] Push event missing repository name/clone_url; ignoring.")
+                logger.warning(f"[webhook] {event} event missing repository name/clone_url; ignoring.")
                 self._reply(400, b"invalid payload", content_type="text/plain; charset=utf-8")
                 return
 
-            logger.info(f"[webhook] Received push for '{repo.name}'; scheduling sync.")
+            logger.info(f"[webhook] Received {event} for '{repo.name}'; scheduling sync.")
             on_push(repo)
             self._reply(202)
 

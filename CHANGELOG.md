@@ -18,6 +18,24 @@
 - Clean up `ruff` lint errors across the source and tests (unused imports, a
   placeholder-less f-string, an unused mock). No behavior change.
 
+## v1.5.0 - 2026-07-16
+
+### Features
+
+- Trigger a sync from GitHub `pull_request` webhook events (the `opened`,
+  `synchronize`, and `reopened` actions), not just `push`. A PR opened or
+  updated on GitHub now refreshes the mirror immediately -- handy for running CI
+  on the mirrored side, including fork PRs whose head arrives as `refs/pull/*`.
+  No merge request or branch is created on the destination; only the mirror is
+  refreshed. Other `pull_request` actions are acknowledged without work.
+
+### Infrastructure
+
+- Pull the Kaniko builder image in `.gitlab-ci.yml` through the ProGet mirror
+  (`artifactory.aparty.blue-yard.be`) instead of `gcr.io` directly; ProGet
+  proxies and caches it on first request. Only affects where the builder image
+  is pulled from, not the push destination.
+
 ## v1.4.1 - 2026-07-15
 
 ### Security
