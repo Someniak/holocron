@@ -3,6 +3,21 @@
 
 ## Unreleased
 
+### Features
+
+- Report GitLab CI results back to GitHub with the opt-in `--github-status` flag
+  (`HOLOCRON_GITHUB_STATUS`). When mirroring GitHub -> GitLab, Holocron
+  provisions a per-project `GITHUB_REPO` CI/CD variable so GitLab runners can
+  post each job's result to the matching GitHub commit SHA (preserved by
+  `git push --mirror`), surfacing the checks on the GitHub PR with no PR-number
+  lookup. Ships a documented `.github-check` job template; fork PRs are out of
+  scope.
+
+### Infrastructure
+
+- Clean up `ruff` lint errors across the source and tests (unused imports, a
+  placeholder-less f-string, an unused mock). No behavior change.
+
 ## v1.4.1 - 2026-07-15
 
 ### Security
