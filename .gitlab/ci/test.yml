@@ -1,0 +1,42 @@
+# GitLab CI: run the same checks the GitHub Actions CI runs
+# (.github/workflows/ci.yaml) so the mirrored GitLab copy gates on identical
+# tests -- the pytest suite and a PyPI package smoke test. The Dockerfile build
+# smoke test is covered by the `build:validate` (Kaniko --no-push) job in
+# build.yml.
+#
+# Image: the astral-sh uv image ships uv + CPython, matching the GitHub job
+# (astral-sh/setup-uv @ 0.10.10 with Python 3.14). The runners must be able to
+# reach ghcr.io, or you can proxy it through Artifactory/ProGet like the Kaniko
+# image in build.yml and adjust the tag below.
+.uv:
+  image: ghcr.io/astral-sh/uv:0.10.10-python3.14-bookworm-slim
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+    - if: '$CI_COMMIT_TAG'
+
+# Mirrors the "Run Tests" job: install all extras + dev deps, run pytest.
+test:
+  extends:
+    - .uv
+    - .github-check
+  stage: test
+  script:
+    - uv sync --all-extras --dev
+    - uv run pytest
+
+# Mirrors the "Smoke Test (PyPI Release)" job: build the wheel, install it into
+# a clean venv, and confirm the console script runs.
+smoke:pypi:
+  extends:
+    - .uv
+    - .github-check
+  stage: test
+  needs: ["test"]
+  script:
+    - uv build
+    - uv venv smoke-test-env
+    - . smoke-test-env/bin/activate
+    - uv pip install dist/*.whl
+    - holocron --help
+    - holocron --version

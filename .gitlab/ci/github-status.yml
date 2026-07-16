@@ -1,0 +1,67 @@
+# GitHub status wrapper for GitLab CI.
+#
+# Any job that `extends: .github-check` reports its result back to the GitHub
+# commit as a status named `ci/gitlab/<job>`. Because `git push --mirror`
+# preserves commit SHAs, the status lands on the exact mirrored commit, so it
+# shows up on the PR's Checks tab with no PR-number lookup. Each job is its own
+# check -- `test`, `smoke:pypi`, `build:push`, etc. appear separately.
+#
+# It is a safe no-op unless BOTH variables below are set, so every job can
+# extend it and projects that have not opted in are unaffected.
+#
+# Setup (once):
+#   GITHUB_STATUS_TOKEN  group-level, MASKED CI/CD variable; a GitHub token with
+#                        the `repo:status` scope. Set at the GROUP level, not
+#                        per project.
+#   GITHUB_REPO          "owner/repo". Holocron can provision this per project
+#                        when run with --github-status / HOLOCRON_GITHUB_STATUS=true.
+#
+# The hooks live in before_script (pending) and after_script (final result), so
+# a job that extends .github-check must NOT define its own before_script or
+# after_script -- put any per-job setup at the top of `script:` instead.
+#
+# HTTP client: curl is auto-installed on apt/apk based images; on minimal images
+# (e.g. Kaniko's busybox) it falls back to wget. If neither is available it logs
+# and skips, without failing the job.
+
+.github-check:
+  before_script:
+    - |
+      # --- github status: ensure an HTTP client, then report "pending" --------
+      if [ -n "$GITHUB_REPO" ] && [ -n "$GITHUB_STATUS_TOKEN" ]; then
+        if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
+          if command -v apt-get >/dev/null 2>&1; then
+            apt-get update -qq && apt-get install -y -qq --no-install-recommends curl >/dev/null 2>&1 || true
+          elif command -v apk >/dev/null 2>&1; then
+            apk add --no-cache curl >/dev/null 2>&1 || true
+          fi
+        fi
+        _gh_url="https://api.github.com/repos/$GITHUB_REPO/statuses/$CI_COMMIT_SHA"
+        _gh_body="{\"state\":\"pending\",\"context\":\"ci/gitlab/$CI_JOB_NAME\",\"target_url\":\"$CI_JOB_URL\"}"
+        if command -v curl >/dev/null 2>&1; then
+          curl -sf -X POST -H "Authorization: token $GITHUB_STATUS_TOKEN" -H "Content-Type: application/json" -d "$_gh_body" "$_gh_url" >/dev/null 2>&1 || true
+        elif command -v wget >/dev/null 2>&1; then
+          wget -q -O- --header="Authorization: token $GITHUB_STATUS_TOKEN" --header="Content-Type: application/json" --post-data="$_gh_body" "$_gh_url" >/dev/null 2>&1 || true
+        else
+          echo "github-status: no curl or wget in image; skipping pending report"
+        fi
+      fi
+  after_script:
+    - |
+      # --- github status: report the final job result -------------------------
+      if [ -n "$GITHUB_REPO" ] && [ -n "$GITHUB_STATUS_TOKEN" ]; then
+        case "$CI_JOB_STATUS" in
+          success) _gh_state=success ;;
+          failed)  _gh_state=failure ;;
+          *)       _gh_state=error ;;
+        esac
+        _gh_url="https://api.github.com/repos/$GITHUB_REPO/statuses/$CI_COMMIT_SHA"
+        _gh_body="{\"state\":\"$_gh_state\",\"context\":\"ci/gitlab/$CI_JOB_NAME\",\"target_url\":\"$CI_JOB_URL\"}"
+        if command -v curl >/dev/null 2>&1; then
+          curl -sf -X POST -H "Authorization: token $GITHUB_STATUS_TOKEN" -H "Content-Type: application/json" -d "$_gh_body" "$_gh_url" >/dev/null 2>&1 || true
+        elif command -v wget >/dev/null 2>&1; then
+          wget -q -O- --header="Authorization: token $GITHUB_STATUS_TOKEN" --header="Content-Type: application/json" --post-data="$_gh_body" "$_gh_url" >/dev/null 2>&1 || true
+        else
+          echo "github-status: no curl or wget in image; skipping final report"
+        fi
+      fi
