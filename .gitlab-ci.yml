@@ -25,7 +25,9 @@ stages:
 .container-build:
   stage: build
   image:
-    name: gcr.io/kaniko-project/executor:v1.23.2-debug
+    # Pulled via ProGet (artifactory.aparty.blue-yard.be), which proxies and
+    # caches gcr.io/kaniko-project/executor on first request.
+    name: artifactory.aparty.blue-yard.be/containers/kaniko-project/executor:v1.23.2-debug
     entrypoint: [""]
   before_script:
     - |
