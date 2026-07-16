@@ -4,13 +4,14 @@
 # smoke test is covered by the `build:validate` (Kaniko --no-push) job in
 # build.yml.
 #
-# Image: the astral-sh uv image ships uv + CPython, matching the GitHub job
-# (astral-sh/setup-uv @ 0.10.10 with Python 3.14). The runners only allow
+# Image: the astral-sh uv image ships uv + CPython (Python 3.14, like the GitHub
+# job). uv only publishes 3.14 on trixie (full Debian 13), alpine, and dhi --
+# there is no -slim variant for 3.14 -- so use trixie. The runners only allow
 # images under artifactory.aparty.blue-yard.be/**, so it is pulled via ProGet,
 # which proxies and caches ghcr.io/astral-sh/uv on first request (same pattern
 # as the Kaniko image in build.yml).
 .uv:
-  image: artifactory.aparty.blue-yard.be/containers/astral-sh/uv:0.10.10-python3.14-bookworm-slim
+  image: artifactory.aparty.blue-yard.be/containers/astral-sh/uv:0.11.29-python3.14-trixie
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_COMMIT_BRANCH'
