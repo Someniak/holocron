@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 # Import from local modules
-from .config import parse_args, validate_config, __author__, __license__, GITLAB_API_URL, GITHUB_API_URL
+from .config import parse_args, validate_config, GITLAB_API_URL, GITHUB_API_URL
 from .logger import setup_logger, logger, log_execution
 from .mirror import needs_sync, sync_one_repo
 from .utils import handle_credits, print_storage_estimate
@@ -137,12 +137,14 @@ def start_webhook_listener(config, source_provider, destination_provider, synced
         sys.exit(1)
 
 
-def get_provider(name, token, api_url_github, api_url_gitlab, namespace=None):
+def get_provider(name, token, api_url_github, api_url_gitlab, namespace=None,
+                 provision_status_var=False):
     """Factory to get the correct provider instance."""
     if name == "github":
         return GitHubProvider(token, api_url_github)
     elif name == "gitlab":
-        return GitLabProvider(api_url_gitlab, token, namespace)
+        return GitLabProvider(api_url_gitlab, token, namespace,
+                              provision_status_var=provision_status_var)
     else:
         raise ValueError(f"Unknown provider: {name}")
 
@@ -174,6 +176,23 @@ def main():
         namespace=args.gitlab_namespace
     )
     
+    # Only provision the GITHUB_REPO CI variable when mirroring GitHub -> GitLab:
+    # it needs the GitHub `full_name` (populated by the GitHub source) and a
+    # GitLab destination to write the variable to.
+    # getattr (not args.github_status) tolerates the hand-built argparse.Namespace
+    # objects the tests pass in, matching the existing getattr(args, "webhook", ...) usage.
+    wants_status = getattr(args, "github_status", False)
+    provision_status_var = (
+        wants_status
+        and args.source == "github"
+        and args.destination == "gitlab"
+    )
+    if wants_status and not provision_status_var:
+        logger.warning(
+            "--github-status is set but is a no-op unless source=github and "
+            "destination=gitlab; skipping GITHUB_REPO provisioning."
+        )
+
     destination_provider = None
     if not args.backup_only:
         destination_provider = get_provider(
@@ -181,7 +200,8 @@ def main():
             get_token_for(args.destination),
             GITHUB_API_URL,
             GITLAB_API_URL,
-            namespace=args.gitlab_namespace
+            namespace=args.gitlab_namespace,
+            provision_status_var=provision_status_var,
         )
 
     logger.info("Initializing Holocron...")

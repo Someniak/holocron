@@ -80,6 +80,10 @@ def build_repo_from_payload(payload: dict):
         clone_url=clone_url,
         size=repo.get("size", 0),
         pushed_at=pushed_at,
+        # GitHub push payloads carry `repository.full_name` ("owner/repo");
+        # keep the webhook path in parity with the poll path so a
+        # webhook-triggered sync can also provision the GITHUB_REPO CI variable.
+        full_name=repo.get("full_name"),
     )
 
 

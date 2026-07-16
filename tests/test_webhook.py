@@ -49,12 +49,19 @@ def test_verify_signature_missing_or_malformed():
 # --- build_repo_from_payload ---
 
 def test_build_repo_from_payload_basic():
-    payload = {"repository": {"name": "myrepo", "clone_url": "https://github.com/u/myrepo.git", "size": 42}}
+    payload = {"repository": {"name": "myrepo", "clone_url": "https://github.com/u/myrepo.git", "size": 42, "full_name": "u/myrepo"}}
     repo = build_repo_from_payload(payload)
     assert repo.name == "myrepo"
     assert repo.clone_url == "https://github.com/u/myrepo.git"
     assert repo.size == 42
+    assert repo.full_name == "u/myrepo"
     assert repo.pushed_at is not None
+
+
+def test_build_repo_full_name_defaults_none_when_absent():
+    payload = {"repository": {"name": "r", "clone_url": "https://x/r.git"}}
+    repo = build_repo_from_payload(payload)
+    assert repo.full_name is None
 
 
 def test_build_repo_parses_unix_pushed_at():

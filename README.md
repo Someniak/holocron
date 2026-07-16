@@ -143,6 +143,7 @@ Holocron uses environment variables for secrets:
 | `--webhook-path` | `/webhook` | URL path the listener serves |
 | `--webhook-cert` | _(none)_ | TLS certificate file — serves HTTPS (pair with `--webhook-key`) |
 | `--webhook-key` | _(none)_ | TLS private key file (pair with `--webhook-cert`) |
+| `--github-status` | False | Provision a per-project `GITHUB_REPO` CI/CD variable on GitLab so runners can report CI checks back to GitHub (GitHub→GitLab only) |
 
 ### Webhook Mode (push-triggered sync)
 
@@ -218,6 +219,48 @@ the generated cert's hostname with `HOLOCRON_WEBHOOK_CN` (default `holocron`).
 > keep the listener off the public internet entirely (reverse proxy / tunnel /
 > VPN). A firewall `DROP` is also the only way to make the port itself appear
 > closed to scanners — the app can't hide an open listening socket.
+
+### Reporting CI checks back to GitHub
+
+If you mirror **GitHub → GitLab** and run your CI on the GitLab side (jobs in each
+repo's `.gitlab-ci.yml`), Holocron can help those GitLab jobs report their results
+back onto the matching **GitHub commit** — so contributors see per-job checks on
+the GitHub PR while the pipeline actually runs on GitLab.
+
+**Why no PR number is needed:** GitHub commit statuses are keyed by **commit SHA**,
+not by PR. Because Holocron mirrors with `git push --mirror`, the commit SHA on
+GitLab is identical to the one on GitHub. A GitLab job already has it in
+`$CI_COMMIT_SHA`, posts a status to that SHA, and GitHub shows it on whichever PR
+has that commit as its head — automatically. (This covers branches pushed within
+the GitHub repo. PRs opened from **forks** are not covered, since their head lives
+in `refs/pull/*` rather than a branch.)
+
+**The one piece Holocron provides:** the GitHub `owner/repo` a mirror came from.
+Run with `--github-status` (or `HOLOCRON_GITHUB_STATUS=true`) and Holocron sets a
+non-secret, per-project GitLab CI/CD variable `GITHUB_REPO` on each mirrored
+project.
+
+**Setup**
+
+1. Run Holocron with `--github-status` (GitHub source, GitLab destination).
+2. In GitLab, add **one group-level, *masked*** CI/CD variable
+   `GITHUB_STATUS_TOKEN` holding a GitHub token with the `repo:status` scope. Set
+   it at the group so it inherits to every mirrored project — do **not** put a
+   secret in each project.
+3. In the repos you want reported, extend the `.github-check` template (a
+   ready-to-use, commented copy lives in this repo's `.gitlab-ci.yml`) from the
+   jobs you care about:
+   ```yaml
+   test:
+     extends: .github-check
+     script:
+       - ...
+   ```
+
+Each such job reports itself as a separate GitHub check named `ci/gitlab/<job>`,
+moving from `pending` to `success`/`failure`, and links back to the GitLab job
+log. The job image needs `curl` (swap for `wget` otherwise). The template's
+empty-variable guards make it a harmless no-op in projects that haven't opted in.
 
 ## Development
 

@@ -10,6 +10,11 @@ class Repository:
     clone_url: str
     size: int = 0  # in KB
     pushed_at: Optional[datetime] = None
+    # Fully-qualified source path ("owner/repo"). Set by the GitHub source so
+    # downstream steps (e.g. provisioning the GITHUB_REPO CI variable on GitLab)
+    # know which GitHub repository a mirror came from. None for sources that
+    # don't expose one.
+    full_name: Optional[str] = None
 
 class Provider(ABC):
     """Abstract base class for all providers (Source or Destination)."""

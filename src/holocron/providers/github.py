@@ -107,7 +107,8 @@ class GitHubProvider(Provider):
             name=item['name'],
             clone_url=item['clone_url'],
             size=item.get('size', 0),
-            pushed_at=pushed_at
+            pushed_at=pushed_at,
+            full_name=item.get('full_name'),
         )
 
     def _get_all_pages(self, base_url, headers, context_name, query_params=None):
@@ -238,8 +239,10 @@ class GitHubProvider(Provider):
                             users = [u['login'] for u in dr.get('users', [])]
                             teams = [t['slug'] for t in dr.get('teams', [])]
                             items = {}
-                            if users: items['users'] = users
-                            if teams: items['teams'] = teams
+                            if users:
+                                items['users'] = users
+                            if teams:
+                                items['teams'] = teams
                             update_payload["required_pull_request_reviews"]["dismissal_restrictions"] = items
 
                     # restrictions: same object -> name-list translation.

@@ -60,3 +60,45 @@ build:push:
         KANIKO_DESTINATIONS: "--destination $ARTIFACTORY_IMAGE:latest --destination $ARTIFACTORY_IMAGE:$CI_COMMIT_SHORT_SHA"
   script:
     - /kaniko/executor --context "$CI_PROJECT_DIR" --dockerfile "$CI_PROJECT_DIR/Dockerfile" $KANIKO_DESTINATIONS
+
+# ---------------------------------------------------------------------------
+# Reporting CI checks back to GitHub (optional).
+#
+# When Holocron mirrors GitHub -> GitLab it can provision a per-project
+# GITHUB_REPO CI/CD variable ("owner/repo") for you (run Holocron with
+# --github-status / HOLOCRON_GITHUB_STATUS=true). GitHub commit statuses are
+# keyed by commit SHA, and `git push --mirror` preserves SHAs, so a GitLab job
+# can post its result straight onto the matching GitHub commit -- it shows up on
+# the PR's Checks tab with no PR-number lookup.
+#
+# Setup (once): add a group-level, MASKED CI/CD variable GITHUB_STATUS_TOKEN
+# holding a GitHub token with the `repo:status` scope. Do NOT set it per-project.
+# The job image must have `curl` (swap for `wget` otherwise). Each job that
+# `extends: .github-check` reports itself as a separate check named
+# `ci/gitlab/<job>`. The empty-variable guards make it a no-op in projects that
+# haven't opted in.
+#
+# Uncomment and add `extends: .github-check` (alongside any other extends) to
+# the jobs you want reported:
+#
+# .github-check:
+#   before_script:
+#     - |
+#       [ -n "$GITHUB_REPO" ] && [ -n "$GITHUB_STATUS_TOKEN" ] && \
+#       curl -sf -X POST \
+#         -H "Authorization: token $GITHUB_STATUS_TOKEN" \
+#         "https://api.github.com/repos/$GITHUB_REPO/statuses/$CI_COMMIT_SHA" \
+#         -d "{\"state\":\"pending\",\"context\":\"ci/gitlab/$CI_JOB_NAME\",\"target_url\":\"$CI_JOB_URL\"}" || true
+#   after_script:
+#     - |
+#       case "$CI_JOB_STATUS" in
+#         success) STATE=success ;;
+#         failed)  STATE=failure ;;
+#         *)       STATE=error ;;
+#       esac
+#       [ -n "$GITHUB_REPO" ] && [ -n "$GITHUB_STATUS_TOKEN" ] && \
+#       curl -sf -X POST \
+#         -H "Authorization: token $GITHUB_STATUS_TOKEN" \
+#         "https://api.github.com/repos/$GITHUB_REPO/statuses/$CI_COMMIT_SHA" \
+#         -d "{\"state\":\"$STATE\",\"context\":\"ci/gitlab/$CI_JOB_NAME\",\"target_url\":\"$CI_JOB_URL\"}" || true
+# ---------------------------------------------------------------------------
