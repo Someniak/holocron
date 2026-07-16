@@ -3,6 +3,8 @@
 
 ## Unreleased
 
+## v1.6.0 - 2026-07-16
+
 ### Features
 
 - Report GitLab CI results back to GitHub with the opt-in `--github-status` flag
