@@ -3,6 +3,8 @@
 
 ## Unreleased
 
+## v1.5.0 - 2026-07-16
+
 ### Features
 
 - Trigger a sync from GitHub `pull_request` webhook events (the `opened`,
