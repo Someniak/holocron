@@ -20,7 +20,10 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .logger import logger
-from .providers.base import Repository, PullRequestEvent
+from .providers.base import Repository, PullRequestEvent, PushEvent
+
+# A deleted branch pushes an all-zero "after" SHA.
+_ZERO_SHA = "0" * 40
 
 # PR actions worth acting on. Others (labeled, assigned, edited, ...) are
 # acknowledged but ignored so they don't re-run CI.
@@ -137,7 +140,41 @@ def build_pr_event_from_payload(payload: dict):
     )
 
 
-def _make_handler(secret, on_push, path, on_pull_request=None):
+def build_push_event_from_payload(payload: dict):
+    """
+    Builds a PushEvent from a GitHub `push` webhook payload.
+
+    Returns None for anything that isn't an actionable branch push — tag pushes
+    (refs/tags/*) and payloads missing required fields. Branch *deletions* are
+    returned with deleted=True so the caller can choose to ignore them.
+    """
+    ref = payload.get("ref") or ""
+    if not ref.startswith("refs/heads/"):
+        return None  # tags and other refs are not branch CI
+
+    repo = payload.get("repository") or {}
+    repo_full_name = repo.get("full_name")
+    repo_name = repo.get("name")
+    clone_url = repo.get("clone_url")
+    after = payload.get("after")
+
+    if not (repo_full_name and repo_name and clone_url and after):
+        return None
+
+    branch = ref[len("refs/heads/"):]
+    deleted = bool(payload.get("deleted")) or after == _ZERO_SHA
+
+    return PushEvent(
+        repo_full_name=repo_full_name,
+        repo_name=repo_name,
+        clone_url=clone_url,
+        branch=branch,
+        after=after,
+        deleted=deleted,
+    )
+
+
+def _make_handler(secret, on_push, path, on_pull_request=None, on_push_ci=None):
     """Builds a request handler class closed over the server's config."""
 
     class WebhookHandler(BaseHTTPRequestHandler):
@@ -245,6 +282,17 @@ def _make_handler(secret, on_push, path, on_pull_request=None):
 
             logger.info(f"[webhook] Received push for '{repo.name}'; scheduling sync.")
             on_push(repo)
+
+            # Push-driven CI (optional): report a GitLab pipeline result on the
+            # pushed commit. Runs alongside the mirror sync; branch deletions and
+            # non-branch pushes carry nothing to test.
+            if on_push_ci is not None:
+                push_event = build_push_event_from_payload(payload)
+                if push_event is not None and not push_event.deleted:
+                    logger.info(f"[webhook] Scheduling push CI for '{push_event.repo_full_name}' "
+                                f"@ {push_event.branch}.")
+                    on_push_ci(push_event)
+
             self._reply(202)
 
         # Any method other than POST — GET/HEAD or an exotic verb — routes to the
@@ -283,7 +331,8 @@ def build_ssl_context(cert_file, key_file):
 
 
 def start_webhook_server(port, secret, on_push, path="/webhook", host="0.0.0.0",
-                         cert_file=None, key_file=None, on_pull_request=None):
+                         cert_file=None, key_file=None, on_pull_request=None,
+                         on_push_ci=None):
     """
     Starts the webhook HTTP(S) server on a background daemon thread.
 
@@ -291,14 +340,16 @@ def start_webhook_server(port, secret, on_push, path="/webhook", host="0.0.0.0",
     self-signed or provided certificate; otherwise it serves plain HTTP.
 
     on_push(repo) is invoked for each valid push event; on_pull_request(pr), when
-    provided, is invoked for each actionable pull_request event. Both should return
-    quickly (e.g. submit to a thread pool); they run on the server's request
-    thread. When on_pull_request is None, pull_request deliveries are acknowledged
-    and ignored.
+    provided, is invoked for each actionable pull_request event; on_push_ci(push),
+    when provided, is invoked for each branch push (alongside on_push) to drive
+    push-triggered CI. All should return quickly (e.g. submit to a thread pool);
+    they run on the server's request thread. When on_pull_request/on_push_ci is
+    None, those paths are skipped.
 
     Returns the ThreadingHTTPServer so the caller can shut it down.
     """
-    handler_cls = _make_handler(secret, on_push, path, on_pull_request=on_pull_request)
+    handler_cls = _make_handler(secret, on_push, path, on_pull_request=on_pull_request,
+                                on_push_ci=on_push_ci)
     server = ThreadingHTTPServer((host, port), handler_cls)
 
     scheme = "http"

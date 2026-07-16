@@ -145,6 +145,7 @@ Holocron uses environment variables for secrets:
 | `--webhook-cert` | _(none)_ | TLS certificate file — serves HTTPS (pair with `--webhook-key`) |
 | `--webhook-key` | _(none)_ | TLS private key file (pair with `--webhook-cert`) |
 | `--ci-bridge` | False | On a GitHub PR, trigger GitLab CI and report the result back as a GitHub status check (requires `--webhook`) |
+| `--ci-on-push` | False | On every branch push, trigger a GitLab branch pipeline and report the result as a commit status — no PR events needed (requires `--webhook`) |
 | `--ci-status-context` | `holocron/gitlab-ci` | GitHub commit-status context name for the CI gate |
 | `--ci-poll-interval` | 10 | Seconds between GitLab pipeline status polls |
 | `--ci-poll-timeout` | 1800 | Give up polling a pipeline after this many seconds |
@@ -278,8 +279,45 @@ them.
 >   rules:
 >     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
 >   script:
->     - pip install uv && uv sync --all-extras --dev && uv run pytest
+>     - pip install uv && uv sync --all-extras && uv run pytest
 > ```
+
+#### Push mode (no PR events)
+
+`--ci-on-push` is a simpler alternative that needs **only** the `push` webhook —
+no `Pull requests` event, no merge requests. On every branch push Holocron pushes
+the branch to GitLab (starting a **branch pipeline**) and sets a commit status on
+the pushed commit. Because a GitHub PR shows whatever statuses exist on its head
+commit, a PR opened on that branch later displays the check automatically — you get
+the same gate without ever subscribing to PR events.
+
+```bash
+GITHUB_TOKEN="..." GITLAB_TOKEN="..." HOLOCRON_WEBHOOK_SECRET="..." \
+  holocron --watch --webhook --ci-on-push
+```
+
+Trade-offs vs `--ci-bridge`:
+
+- **Simpler + safer**: only your own repo's branches trigger it, so fork code never
+  runs; there is no MR lifecycle to manage.
+- **Runs on every branch push** (not just PR branches) — scope it with GitLab CI
+  `rules:` (branch patterns, `changes:`) if that's too much.
+- **No merged-results**: a branch pipeline tests the head in isolation, not merged
+  with the base. Use `--ci-bridge` if you need "passes once merged with `main`".
+- Requires a branch-push rule in `.gitlab-ci.yml`, since the stock config only runs
+  on merge requests and the default branch:
+  ```yaml
+  test:branch:
+    stage: build
+    image: python:3.14-alpine
+    rules:
+      - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH != $CI_DEFAULT_BRANCH'
+    script:
+      - pip install uv && uv sync --all-extras && uv run pytest
+  ```
+
+`--ci-bridge` and `--ci-on-push` can be enabled independently or together (they
+share the `holocron/gitlab-ci` status context).
 
 ## Development
 

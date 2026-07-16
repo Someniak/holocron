@@ -76,3 +76,27 @@ def test_ci_bridge_ok_with_both_tokens(monkeypatch):
     monkeypatch.setenv("GITLAB_TOKEN", "gl")
     gh, gl = validate_config("github", "gitlab", ci_bridge=True, webhook=True)
     assert gh == "gh" and gl == "gl"
+
+
+def test_ci_on_push_flag_defaults_off():
+    with patch.object(sys, 'argv', ['g2g.py']):
+        assert parse_args().ci_on_push is False
+
+
+def test_ci_on_push_flag_parses():
+    with patch.object(sys, 'argv', ['g2g.py', '--ci-on-push', '--webhook']):
+        assert parse_args().ci_on_push is True
+
+
+def test_ci_on_push_requires_webhook(monkeypatch):
+    monkeypatch.setenv("GITHUB_TOKEN", "gh")
+    monkeypatch.setenv("GITLAB_TOKEN", "gl")
+    with pytest.raises(SystemExit):
+        validate_config("github", "gitlab", ci_on_push=True, webhook=False)
+
+
+def test_ci_on_push_requires_both_tokens(monkeypatch):
+    monkeypatch.setenv("GITHUB_TOKEN", "gh")
+    monkeypatch.delenv("GITLAB_TOKEN", raising=False)
+    with pytest.raises(SystemExit):
+        validate_config("github", "gitlab", ci_on_push=True, webhook=True)

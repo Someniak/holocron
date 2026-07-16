@@ -62,6 +62,7 @@ def parse_args():
     # trigger the GitLab pipeline) and report the result back as a GitHub commit
     # status. Requires --webhook and BOTH tokens.
     parser.add_argument("--ci-bridge", action="store_true", default=get_bool_env("HOLOCRON_CI_BRIDGE"), help="On a GitHub PR, trigger GitLab CI and report the result back as a GitHub status check (requires --webhook)")
+    parser.add_argument("--ci-on-push", action="store_true", default=get_bool_env("HOLOCRON_CI_ON_PUSH"), help="On every branch push, trigger a GitLab branch pipeline and report the result as a GitHub commit status (no PR events needed; requires --webhook)")
     parser.add_argument("--ci-status-context", type=str, default=os.environ.get("HOLOCRON_CI_STATUS_CONTEXT", "holocron/gitlab-ci"), help="GitHub commit-status context name for the CI gate (default: holocron/gitlab-ci)")
     parser.add_argument("--ci-poll-interval", type=int, default=int(os.environ.get("HOLOCRON_CI_POLL_INTERVAL", 10)), help="Seconds between GitLab pipeline status polls (default: 10)")
     parser.add_argument("--ci-poll-timeout", type=int, default=int(os.environ.get("HOLOCRON_CI_POLL_TIMEOUT", 1800)), help="Give up polling a pipeline after this many seconds (default: 1800)")
@@ -70,7 +71,8 @@ def parse_args():
 
     return parser.parse_args()
 
-def validate_config(source, destination, backup_only=False, ci_bridge=False, webhook=False):
+def validate_config(source, destination, backup_only=False, ci_bridge=False,
+                    ci_on_push=False, webhook=False):
     """
     Validates environment variables and arguments.
     Returns: (gh_token, gl_token)
@@ -78,18 +80,19 @@ def validate_config(source, destination, backup_only=False, ci_bridge=False, web
     gh_token = os.environ.get("GITHUB_TOKEN")
     gl_token = os.environ.get("GITLAB_TOKEN")
 
-    # The CI bridge always reads from GitHub (status write-back) and GitLab (MR +
-    # pipeline) regardless of the mirror's --source/--destination direction, and
-    # is driven by PR webhooks, so it needs both tokens and the listener.
-    if ci_bridge:
+    # Both CI modes read from GitHub (status write-back) and GitLab (pipeline)
+    # regardless of the mirror's --source/--destination direction, and are driven
+    # by webhooks, so they need both tokens and the listener.
+    if ci_bridge or ci_on_push:
+        flag = "--ci-bridge" if ci_bridge else "--ci-on-push"
         if not webhook:
-            print("CRITICAL: --ci-bridge requires --webhook (it is driven by GitHub PR events).")
+            print(f"CRITICAL: {flag} requires --webhook (it is driven by GitHub webhook events).")
             sys.exit(1)
         if not gh_token:
-            print("CRITICAL: Missing GITHUB_TOKEN (required for --ci-bridge status checks).")
+            print(f"CRITICAL: Missing GITHUB_TOKEN (required for {flag} status checks).")
             sys.exit(1)
         if not gl_token:
-            print("CRITICAL: Missing GITLAB_TOKEN (required for --ci-bridge merge requests).")
+            print(f"CRITICAL: Missing GITLAB_TOKEN (required for {flag} GitLab pipelines).")
             sys.exit(1)
 
     # Check source requirements

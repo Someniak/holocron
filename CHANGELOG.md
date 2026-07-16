@@ -18,6 +18,13 @@
   (`--ci-allow-forks` to override). New flags: `--ci-status-context`,
   `--ci-poll-interval`, `--ci-poll-timeout`, `--ci-allow-forks`,
   `--ci-branch-prefix` (all env-backed).
+- Add a push-driven CI mode (`--ci-on-push`) that needs only the `push` webhook —
+  no pull-request events. On each branch push Holocron pushes the branch to GitLab
+  (starting a branch pipeline) and reports the result as a commit status on the
+  pushed commit; a PR opened on that branch shows the check automatically, since
+  GitHub keys PR checks on the head SHA. Only branches pushed to your own repo
+  reach it, so fork code never runs. Can be used alongside or instead of
+  `--ci-bridge` (shared `holocron/gitlab-ci` status context).
 
 ## v1.4.1 - 2026-07-15
 

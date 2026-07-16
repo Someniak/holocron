@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from .config import parse_args, validate_config, __author__, __license__, GITLAB_API_URL, GITHUB_API_URL
 from .logger import setup_logger, logger, log_execution
 from .mirror import needs_sync, sync_one_repo
-from .ci_bridge import handle_pull_request
+from .ci_bridge import handle_pull_request, handle_push_ci
 from .utils import handle_credits, print_storage_estimate
 from .providers.gitlab import GitLabProvider
 from .providers.github import GitHubProvider
@@ -127,30 +127,53 @@ def start_webhook_listener(config, source_provider, destination_provider, synced
 
         future.add_done_callback(_done)
 
-    # PR-driven CI bridge (optional). Separate pool: pipeline polls block a thread
-    # for minutes, so they must not share the mirror-sync pool.
+    # CI modes (optional). Separate pool: pipeline polls block a thread for
+    # minutes, so they must not share the mirror-sync pool.
     on_pull_request = None
-    if config.get('ci_bridge') and ci_github_provider and ci_gitlab_provider:
+    on_push_ci = None
+    ci_enabled = (config.get('ci_bridge') or config.get('ci_on_push'))
+    if ci_enabled and ci_github_provider and ci_gitlab_provider:
         ci_executor = ThreadPoolExecutor(max_workers=config['concurrency'], thread_name_prefix="ci-bridge")
 
-        def on_pull_request(pr):
-            future = ci_executor.submit(
-                handle_pull_request,
-                pr,
-                config['storage'],
-                ci_github_provider,   # source provider for cloning the PR head
-                ci_gitlab_provider,
-                ci_github_provider,   # provider for the GitHub status write-back
-                config,
-            )
+        if config.get('ci_bridge'):
+            def on_pull_request(pr):
+                future = ci_executor.submit(
+                    handle_pull_request,
+                    pr,
+                    config['storage'],
+                    ci_github_provider,   # source provider for cloning the PR head
+                    ci_gitlab_provider,
+                    ci_github_provider,   # provider for the GitHub status write-back
+                    config,
+                )
 
-            def _done_pr(fut):
-                try:
-                    fut.result()
-                except Exception as exc:
-                    logger.error(f"[PR #{pr.number}] CI bridge failed: {exc}")
+                def _done_pr(fut):
+                    try:
+                        fut.result()
+                    except Exception as exc:
+                        logger.error(f"[PR #{pr.number}] CI bridge failed: {exc}")
 
-            future.add_done_callback(_done_pr)
+                future.add_done_callback(_done_pr)
+
+        if config.get('ci_on_push'):
+            def on_push_ci(push):
+                future = ci_executor.submit(
+                    handle_push_ci,
+                    push,
+                    config['storage'],
+                    ci_github_provider,   # source provider for fetching the branch
+                    ci_gitlab_provider,
+                    ci_github_provider,   # provider for the GitHub status write-back
+                    config,
+                )
+
+                def _done_push_ci(fut):
+                    try:
+                        fut.result()
+                    except Exception as exc:
+                        logger.error(f"[{push.repo_full_name}@{push.branch}] push CI failed: {exc}")
+
+                future.add_done_callback(_done_push_ci)
 
     try:
         return start_webhook_server(
@@ -161,6 +184,7 @@ def start_webhook_listener(config, source_provider, destination_provider, synced
             cert_file=config.get('webhook_cert'),
             key_file=config.get('webhook_key'),
             on_pull_request=on_pull_request,
+            on_push_ci=on_push_ci,
         )
     except (ValueError, FileNotFoundError, ssl.SSLError) as exc:
         logger.error(f"CRITICAL: cannot start webhook TLS listener: {exc}")
@@ -190,6 +214,7 @@ def main():
     gh_token, gl_token = validate_config(
         args.source, args.destination, args.backup_only,
         ci_bridge=getattr(args, "ci_bridge", False),
+        ci_on_push=getattr(args, "ci_on_push", False),
         webhook=getattr(args, "webhook", False),
     )
     
@@ -227,7 +252,7 @@ def main():
     # source/destination direction, so build them explicitly.
     ci_github_provider = None
     ci_gitlab_provider = None
-    if getattr(args, "ci_bridge", False):
+    if getattr(args, "ci_bridge", False) or getattr(args, "ci_on_push", False):
         ci_github_provider = GitHubProvider(gh_token, GITHUB_API_URL)
         ci_gitlab_provider = GitLabProvider(GITLAB_API_URL, gl_token, args.gitlab_namespace)
 
