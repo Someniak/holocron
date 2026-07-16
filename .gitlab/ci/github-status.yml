@@ -4,7 +4,7 @@
 # commit as a status named `ci/gitlab/<job>`. Because `git push --mirror`
 # preserves commit SHAs, the status lands on the exact mirrored commit, so it
 # shows up on the PR's Checks tab with no PR-number lookup. Each job is its own
-# check -- `test`, `smoke:pypi`, `build:push`, etc. appear separately.
+# check -- `unit-tests`, `smoke-pypi`, `docker-publish`, etc. appear separately.
 #
 # It is a safe no-op unless BOTH variables below are set, so every job can
 # extend it and projects that have not opted in are unaffected.

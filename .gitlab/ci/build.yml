@@ -4,7 +4,7 @@
 #
 # Builder: Kaniko (rootless, no Docker daemon / privileged runner required).
 # All jobs are manual: they show up as play buttons in the GitLab Pipelines /
-# merge-request UI and only run when you start them. The `build:validate`
+# merge-request UI and only run when you start them. The `docker-build`
 # (--no-push) job doubles as the Dockerfile build smoke test.
 #
 # Every job extends .github-check (see github-status.yml) so its result is
@@ -50,7 +50,7 @@
 
 # Merge requests: build only, to validate the Dockerfile without publishing.
 # Manual: start it from the MR pipeline / Pipelines view when you want it.
-build:validate:
+docker-build:
   extends:
     - .container-build
     - .github-check
@@ -64,7 +64,7 @@ build:validate:
 
 # Default branch and tags: build and push to Artifactory.
 # Manual: start it from the Pipelines view when you want to publish an image.
-build:push:
+docker-publish:
   extends:
     - .container-build
     - .github-check

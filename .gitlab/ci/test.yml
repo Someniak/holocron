@@ -1,7 +1,7 @@
 # GitLab CI: run the same checks the GitHub Actions CI runs
 # (.github/workflows/ci.yaml) so the mirrored GitLab copy gates on identical
 # tests -- the pytest suite and a PyPI package smoke test. The Dockerfile build
-# smoke test is covered by the `build:validate` (Kaniko --no-push) job in
+# smoke test is covered by the `docker-build` (Kaniko --no-push) job in
 # build.yml.
 #
 # Image: the astral-sh uv image ships uv + CPython (Python 3.14, like the GitHub
@@ -17,8 +17,26 @@
     - if: '$CI_COMMIT_BRANCH'
     - if: '$CI_COMMIT_TAG'
 
+# Seed a "pending" GitHub status for every auto-running check as soon as the
+# pipeline starts, so all checks appear on the PR up front instead of trickling
+# in as each job begins (a commit status can only be posted by a running job,
+# and `needs` ordering otherwise staggers them). Runs first in the built-in
+# .pre stage. Does NOT extend .github-check (it seeds other jobs' contexts, not
+# its own). Keep the context list below in sync with the reporting job names.
+seed-github-status:
+  extends: .uv
+  stage: .pre
+  script:
+    - |
+      [ -n "$GITHUB_REPO" ] && [ -n "$GITHUB_STATUS_TOKEN" ] || exit 0
+      for ctx in unit-tests smoke-pypi; do
+        GH_URL="https://api.github.com/repos/$GITHUB_REPO/statuses/$CI_COMMIT_SHA" \
+        GH_BODY="{\"state\":\"pending\",\"context\":\"ci/gitlab/$ctx\",\"target_url\":\"$CI_PIPELINE_URL\"}" \
+        GH_TOKEN="$GITHUB_STATUS_TOKEN" python3 -c 'import os,urllib.request; urllib.request.urlopen(urllib.request.Request(os.environ["GH_URL"], data=os.environ["GH_BODY"].encode(), method="POST", headers={"Authorization":"token "+os.environ["GH_TOKEN"], "Content-Type":"application/json", "User-Agent":"gitlab-ci-github-status"}), timeout=15)' >/dev/null 2>&1 || true
+      done
+
 # Mirrors the "Run Tests" job: install all extras + dev deps, run pytest.
-test:
+unit-tests:
   extends:
     - .uv
     - .github-check
@@ -29,12 +47,12 @@ test:
 
 # Mirrors the "Smoke Test (PyPI Release)" job: build the wheel, install it into
 # a clean venv, and confirm the console script runs.
-smoke:pypi:
+smoke-pypi:
   extends:
     - .uv
     - .github-check
   stage: test
-  needs: ["test"]
+  needs: ["unit-tests"]
   script:
     - uv build
     - uv venv smoke-test-env
