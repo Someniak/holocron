@@ -1,0 +1,84 @@
+# GitLab CI: build the container image on GitLab runners and push it to
+# Artifactory. This complements the GitHub Actions release (which publishes to
+# GHCR) so the mirrored GitLab copy produces its own images.
+#
+# Builder: Kaniko (rootless, no Docker daemon / privileged runner required).
+# All jobs are manual: they show up as play buttons in the GitLab Pipelines /
+# merge-request UI and only run when you start them. The `docker-build`
+# (--no-push) job doubles as the Dockerfile build smoke test.
+#
+# Every job extends .github-check (see github-status.yml) so its result is
+# reported back to the mirrored GitHub commit when GITHUB_REPO /
+# GITHUB_STATUS_TOKEN are configured.
+#
+# Required CI/CD variables (Settings -> CI/CD -> Variables; mark USER/TOKEN as
+# masked, and protect them if you only build protected branches/tags):
+#
+#   ARTIFACTORY_REGISTRY  Docker registry host only, e.g. mycompany.jfrog.io
+#   ARTIFACTORY_IMAGE     Full image path WITHOUT a tag, e.g.
+#                         mycompany.jfrog.io/docker-local/holocron
+#   ARTIFACTORY_USER      Artifactory username or service account
+#   ARTIFACTORY_TOKEN     Artifactory API token or password (masked)
+#
+# Note: the Dockerfile pulls python:3.14-alpine (docker.io) and
+# ghcr.io/astral-sh/uv (ghcr.io). The runners must be able to reach those, or
+# you can proxy them through Artifactory remote repositories and adjust the
+# base-image references in the Dockerfile.
+
+# Validate the required variables and write Kaniko's registry auth. Kept in the
+# job `script` (not before_script) so it does not clash with the .github-check
+# before_script hook. Shared between jobs via a YAML anchor.
+.kaniko-auth: &kaniko-auth |
+  for v in ARTIFACTORY_REGISTRY ARTIFACTORY_IMAGE ARTIFACTORY_USER ARTIFACTORY_TOKEN; do
+    eval "val=\$$v"
+    if [ -z "$val" ]; then
+      echo "ERROR: required CI/CD variable $v is not set."
+      exit 1
+    fi
+  done
+  mkdir -p /kaniko/.docker
+  AUTH=$(printf '%s:%s' "$ARTIFACTORY_USER" "$ARTIFACTORY_TOKEN" | base64 | tr -d '\n')
+  printf '{"auths":{"%s":{"auth":"%s"}}}' "$ARTIFACTORY_REGISTRY" "$AUTH" > /kaniko/.docker/config.json
+
+.container-build:
+  stage: build
+  image:
+    # Pulled via ProGet (artifactory.aparty.blue-yard.be), which proxies and
+    # caches gcr.io/kaniko-project/executor on first request.
+    name: artifactory.aparty.blue-yard.be/containers/kaniko-project/executor:v1.23.2-debug
+    entrypoint: [""]
+
+# Merge requests: build only, to validate the Dockerfile without publishing.
+# Manual: start it from the MR pipeline / Pipelines view when you want it.
+docker-build:
+  extends:
+    - .container-build
+    - .github-check
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      when: manual
+      allow_failure: true
+  script:
+    - *kaniko-auth
+    - /kaniko/executor --context "$CI_PROJECT_DIR" --dockerfile "$CI_PROJECT_DIR/Dockerfile" --no-push
+
+# Default branch and tags: build and push to Artifactory.
+# Manual: start it from the Pipelines view when you want to publish an image.
+docker-publish:
+  extends:
+    - .container-build
+    - .github-check
+  rules:
+    - if: '$CI_COMMIT_TAG'
+      when: manual
+      allow_failure: true
+      variables:
+        KANIKO_DESTINATIONS: "--destination $ARTIFACTORY_IMAGE:$CI_COMMIT_TAG --destination $ARTIFACTORY_IMAGE:latest"
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: manual
+      allow_failure: true
+      variables:
+        KANIKO_DESTINATIONS: "--destination $ARTIFACTORY_IMAGE:latest --destination $ARTIFACTORY_IMAGE:$CI_COMMIT_SHORT_SHA"
+  script:
+    - *kaniko-auth
+    - /kaniko/executor --context "$CI_PROJECT_DIR" --dockerfile "$CI_PROJECT_DIR/Dockerfile" $KANIKO_DESTINATIONS

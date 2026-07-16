@@ -1,106 +1,28 @@
-# GitLab CI: build the container image on GitLab runners and push it to
-# Artifactory. This complements the GitHub Actions release (which publishes to
-# GHCR) so the mirrored GitLab copy produces its own images.
+# Holocron GitLab CI entrypoint. The actual job definitions live under
+# .gitlab/ci/ -- keeping this root file a thin include means no project setting
+# (Settings -> CI/CD -> CI/CD configuration file) has to change.
 #
-# Builder: Kaniko (rootless, no Docker daemon / privileged runner required).
-#
-# Required CI/CD variables (Settings -> CI/CD -> Variables; mark USER/TOKEN as
-# masked, and protect them if you only build protected branches/tags):
-#
-#   ARTIFACTORY_REGISTRY  Docker registry host only, e.g. mycompany.jfrog.io
-#   ARTIFACTORY_IMAGE     Full image path WITHOUT a tag, e.g.
-#                         mycompany.jfrog.io/docker-local/holocron
-#   ARTIFACTORY_USER      Artifactory username or service account
-#   ARTIFACTORY_TOKEN     Artifactory API token or password (masked)
-#
-# Note: the Dockerfile pulls python:3.14-alpine (docker.io) and
-# ghcr.io/astral-sh/uv (ghcr.io). The runners must be able to reach those, or
-# you can proxy them through Artifactory remote repositories and adjust the
-# base-image references in the Dockerfile.
+#   .gitlab/ci/github-status.yml  .github-check wrapper: report results to GitHub
+#   .gitlab/ci/test.yml           pytest + PyPI smoke test (mirrors GitHub CI)
+#   .gitlab/ci/build.yml          Kaniko container image build/push (manual)
 
-stages:
-  - build
-
-# Shared setup: validate variables and write Kaniko's registry auth.
-.container-build:
-  stage: build
-  image:
-    # Pulled via ProGet (artifactory.aparty.blue-yard.be), which proxies and
-    # caches gcr.io/kaniko-project/executor on first request.
-    name: artifactory.aparty.blue-yard.be/containers/kaniko-project/executor:v1.23.2-debug
-    entrypoint: [""]
-  before_script:
-    - |
-      for v in ARTIFACTORY_REGISTRY ARTIFACTORY_IMAGE ARTIFACTORY_USER ARTIFACTORY_TOKEN; do
-        eval "val=\$$v"
-        if [ -z "$val" ]; then
-          echo "ERROR: required CI/CD variable $v is not set."
-          exit 1
-        fi
-      done
-      mkdir -p /kaniko/.docker
-      AUTH=$(printf '%s:%s' "$ARTIFACTORY_USER" "$ARTIFACTORY_TOKEN" | base64 | tr -d '\n')
-      printf '{"auths":{"%s":{"auth":"%s"}}}' "$ARTIFACTORY_REGISTRY" "$AUTH" > /kaniko/.docker/config.json
-
-# Merge requests: build only, to validate the Dockerfile without publishing.
-build:validate:
-  extends: .container-build
+# Run pipelines for merge requests, branch pushes, and tags -- but never a
+# duplicate branch pipeline when the branch has an open MR. Holocron mirrors
+# with `git push --mirror` (branches only, no MRs), so the branch rule is what
+# gives the GitLab copy per-push test coverage.
+workflow:
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-  script:
-    - /kaniko/executor --context "$CI_PROJECT_DIR" --dockerfile "$CI_PROJECT_DIR/Dockerfile" --no-push
-
-# Default branch and tags: build and push to Artifactory.
-build:push:
-  extends: .container-build
-  rules:
+    - if: '$CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS'
+      when: never
+    - if: '$CI_COMMIT_BRANCH'
     - if: '$CI_COMMIT_TAG'
-      variables:
-        KANIKO_DESTINATIONS: "--destination $ARTIFACTORY_IMAGE:$CI_COMMIT_TAG --destination $ARTIFACTORY_IMAGE:latest"
-    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
-      variables:
-        KANIKO_DESTINATIONS: "--destination $ARTIFACTORY_IMAGE:latest --destination $ARTIFACTORY_IMAGE:$CI_COMMIT_SHORT_SHA"
-  script:
-    - /kaniko/executor --context "$CI_PROJECT_DIR" --dockerfile "$CI_PROJECT_DIR/Dockerfile" $KANIKO_DESTINATIONS
 
-# ---------------------------------------------------------------------------
-# Reporting CI checks back to GitHub (optional).
-#
-# When Holocron mirrors GitHub -> GitLab it can provision a per-project
-# GITHUB_REPO CI/CD variable ("owner/repo") for you (run Holocron with
-# --github-status / HOLOCRON_GITHUB_STATUS=true). GitHub commit statuses are
-# keyed by commit SHA, and `git push --mirror` preserves SHAs, so a GitLab job
-# can post its result straight onto the matching GitHub commit -- it shows up on
-# the PR's Checks tab with no PR-number lookup.
-#
-# Setup (once): add a group-level, MASKED CI/CD variable GITHUB_STATUS_TOKEN
-# holding a GitHub token with the `repo:status` scope. Do NOT set it per-project.
-# The job image must have `curl` (swap for `wget` otherwise). Each job that
-# `extends: .github-check` reports itself as a separate check named
-# `ci/gitlab/<job>`. The empty-variable guards make it a no-op in projects that
-# haven't opted in.
-#
-# Uncomment and add `extends: .github-check` (alongside any other extends) to
-# the jobs you want reported:
-#
-# .github-check:
-#   before_script:
-#     - |
-#       [ -n "$GITHUB_REPO" ] && [ -n "$GITHUB_STATUS_TOKEN" ] && \
-#       curl -sf -X POST \
-#         -H "Authorization: token $GITHUB_STATUS_TOKEN" \
-#         "https://api.github.com/repos/$GITHUB_REPO/statuses/$CI_COMMIT_SHA" \
-#         -d "{\"state\":\"pending\",\"context\":\"ci/gitlab/$CI_JOB_NAME\",\"target_url\":\"$CI_JOB_URL\"}" || true
-#   after_script:
-#     - |
-#       case "$CI_JOB_STATUS" in
-#         success) STATE=success ;;
-#         failed)  STATE=failure ;;
-#         *)       STATE=error ;;
-#       esac
-#       [ -n "$GITHUB_REPO" ] && [ -n "$GITHUB_STATUS_TOKEN" ] && \
-#       curl -sf -X POST \
-#         -H "Authorization: token $GITHUB_STATUS_TOKEN" \
-#         "https://api.github.com/repos/$GITHUB_REPO/statuses/$CI_COMMIT_SHA" \
-#         -d "{\"state\":\"$STATE\",\"context\":\"ci/gitlab/$CI_JOB_NAME\",\"target_url\":\"$CI_JOB_URL\"}" || true
-# ---------------------------------------------------------------------------
+stages:
+  - test
+  - build
+
+include:
+  - local: .gitlab/ci/github-status.yml
+  - local: .gitlab/ci/test.yml
+  - local: .gitlab/ci/build.yml

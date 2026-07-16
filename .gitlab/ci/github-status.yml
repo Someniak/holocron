@@ -1,0 +1,68 @@
+# GitHub status wrapper for GitLab CI.
+#
+# Any job that `extends: .github-check` reports its result back to the GitHub
+# commit as a status named `ci/gitlab/<job>`. Because `git push --mirror`
+# preserves commit SHAs, the status lands on the exact mirrored commit, so it
+# shows up on the PR's Checks tab with no PR-number lookup. Each job is its own
+# check -- `unit-tests`, `smoke-pypi`, `docker-publish`, etc. appear separately.
+#
+# It is a safe no-op unless BOTH variables below are set, so every job can
+# extend it and projects that have not opted in are unaffected.
+#
+# Setup (once):
+#   GITHUB_STATUS_TOKEN  group-level, MASKED CI/CD variable; a GitHub token with
+#                        the `repo:status` scope. Set at the GROUP level, not
+#                        per project.
+#   GITHUB_REPO          "owner/repo". Holocron can provision this per project
+#                        when run with --github-status / HOLOCRON_GITHUB_STATUS=true.
+#
+# The runner must also be allowed outbound to api.github.com:443 (the same way
+# it is allowed to reach the internal registry / PyPI mirror).
+#
+# The hooks live in before_script (pending) and after_script (final result), so
+# a job that extends .github-check must NOT define its own before_script or
+# after_script -- put any per-job setup at the top of `script:` instead.
+#
+# HTTP client: uses whichever of curl / wget / python3 the image already has,
+# in that order. No package installs -- the uv images (Debian, no curl/wget)
+# use python3; the Kaniko busybox image uses wget. If none are present it logs
+# and skips, without failing the job.
+
+.github-check:
+  before_script:
+    - |
+      # --- github status: report "pending" -----------------------------------
+      if [ -n "$GITHUB_REPO" ] && [ -n "$GITHUB_STATUS_TOKEN" ]; then
+        GH_URL="https://api.github.com/repos/$GITHUB_REPO/statuses/$CI_COMMIT_SHA"
+        GH_BODY="{\"state\":\"pending\",\"context\":\"ci/gitlab/$CI_JOB_NAME\",\"target_url\":\"$CI_JOB_URL\"}"
+        if command -v curl >/dev/null 2>&1; then
+          curl -sf -X POST -H "Authorization: token $GITHUB_STATUS_TOKEN" -H "Content-Type: application/json" -d "$GH_BODY" "$GH_URL" >/dev/null 2>&1 || true
+        elif command -v wget >/dev/null 2>&1; then
+          wget -q -O- --header="Authorization: token $GITHUB_STATUS_TOKEN" --header="Content-Type: application/json" --post-data="$GH_BODY" "$GH_URL" >/dev/null 2>&1 || true
+        elif command -v python3 >/dev/null 2>&1; then
+          GH_URL="$GH_URL" GH_BODY="$GH_BODY" GH_TOKEN="$GITHUB_STATUS_TOKEN" python3 -c 'import os,urllib.request; urllib.request.urlopen(urllib.request.Request(os.environ["GH_URL"], data=os.environ["GH_BODY"].encode(), method="POST", headers={"Authorization":"token "+os.environ["GH_TOKEN"], "Content-Type":"application/json", "User-Agent":"gitlab-ci-github-status"}), timeout=15)' >/dev/null 2>&1 || true
+        else
+          echo "github-status: no curl/wget/python3 in image; skipping pending report"
+        fi
+      fi
+  after_script:
+    - |
+      # --- github status: report the final job result -------------------------
+      if [ -n "$GITHUB_REPO" ] && [ -n "$GITHUB_STATUS_TOKEN" ]; then
+        case "$CI_JOB_STATUS" in
+          success) GH_STATE=success ;;
+          failed)  GH_STATE=failure ;;
+          *)       GH_STATE=error ;;
+        esac
+        GH_URL="https://api.github.com/repos/$GITHUB_REPO/statuses/$CI_COMMIT_SHA"
+        GH_BODY="{\"state\":\"$GH_STATE\",\"context\":\"ci/gitlab/$CI_JOB_NAME\",\"target_url\":\"$CI_JOB_URL\"}"
+        if command -v curl >/dev/null 2>&1; then
+          curl -sf -X POST -H "Authorization: token $GITHUB_STATUS_TOKEN" -H "Content-Type: application/json" -d "$GH_BODY" "$GH_URL" >/dev/null 2>&1 || true
+        elif command -v wget >/dev/null 2>&1; then
+          wget -q -O- --header="Authorization: token $GITHUB_STATUS_TOKEN" --header="Content-Type: application/json" --post-data="$GH_BODY" "$GH_URL" >/dev/null 2>&1 || true
+        elif command -v python3 >/dev/null 2>&1; then
+          GH_URL="$GH_URL" GH_BODY="$GH_BODY" GH_TOKEN="$GITHUB_STATUS_TOKEN" python3 -c 'import os,urllib.request; urllib.request.urlopen(urllib.request.Request(os.environ["GH_URL"], data=os.environ["GH_BODY"].encode(), method="POST", headers={"Authorization":"token "+os.environ["GH_TOKEN"], "Content-Type":"application/json", "User-Agent":"gitlab-ci-github-status"}), timeout=15)' >/dev/null 2>&1 || true
+        else
+          echo "github-status: no curl/wget/python3 in image; skipping final report"
+        fi
+      fi
