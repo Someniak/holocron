@@ -3,6 +3,15 @@
 
 ## Unreleased
 
+### Features
+
+- Trigger a sync from GitHub `pull_request` webhook events (the `opened`,
+  `synchronize`, and `reopened` actions), not just `push`. A PR opened or
+  updated on GitHub now refreshes the mirror immediately -- handy for running CI
+  on the mirrored side, including fork PRs whose head arrives as `refs/pull/*`.
+  No merge request or branch is created on the destination; only the mirror is
+  refreshed. Other `pull_request` actions are acknowledged without work.
+
 ### Infrastructure
 
 - Pull the Kaniko builder image in `.gitlab-ci.yml` through the ProGet mirror
