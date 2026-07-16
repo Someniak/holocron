@@ -1,6 +1,6 @@
 import pytest
 import logging
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 from holocron.logger import setup_logger, log_execution, logger
 
 def test_setup_logger_verbose():

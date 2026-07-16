@@ -52,7 +52,7 @@ def is_safe_clone_url(url):
 def handle_credits(show_credits):
     """Checks for --credits flag and exits if pre sent."""
     if show_credits:
-        print(f"Holocron: The Ultimate Git Mirroring Tool")
+        print("Holocron: The Ultimate Git Mirroring Tool")
         print(f"Author: {__author__}")
         print(f"License: {__license__}")
         sys.exit(0)

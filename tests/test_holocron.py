@@ -1,8 +1,7 @@
 import os
-import sys
 import pytest
 import argparse
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 from holocron.__main__ import main, run_sync_cycle
 from holocron.providers.base import Repository
 from datetime import datetime
@@ -173,8 +172,7 @@ def test_main_watch_loop(mock_sleep, mock_sync, mock_get_provider, mock_parse):
         [repo1], # Cycle 1
         [repo1]  # Cycle 2
     ]
-    mock_dest = MagicMock()
-    
+
     mock_get_provider.return_value = mock_source
     
     # Break loop after 2 sleeps (end of cycle 2)
