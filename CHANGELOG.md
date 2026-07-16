@@ -3,6 +3,13 @@
 
 ## Unreleased
 
+### Infrastructure
+
+- Pull the Kaniko builder image in `.gitlab-ci.yml` through the ProGet mirror
+  (`artifactory.aparty.blue-yard.be`) instead of `gcr.io` directly; ProGet
+  proxies and caches it on first request. Only affects where the builder image
+  is pulled from, not the push destination.
+
 ## v1.4.1 - 2026-07-15
 
 ### Security
