@@ -4,10 +4,14 @@ from ..logger import logger, log_execution
 from .base import Provider, Repository
 
 class GitLabProvider(Provider):
-    def __init__(self, api_url, token, namespace=None):
+    def __init__(self, api_url, token, namespace=None, provision_status_var=False):
         self.api_url = api_url
         self.token = token
         self.namespace = namespace
+        # When True, prepare_push upserts a per-project GITHUB_REPO CI/CD
+        # variable (the source's owner/repo) so GitLab runners can report CI
+        # checks back to the matching GitHub commit.
+        self.provision_status_var = provision_status_var
 
     @log_execution
     def fetch_repos(self) -> list[Repository]:
@@ -41,7 +45,11 @@ class GitLabProvider(Provider):
 
     def prepare_push(self, repo: Repository):
         """
-        Ensures the default branch is configured to allow force pushes (required for mirroring).
+        Prepares the destination project for the mirror push.
+
+        Ensures the default branch allows force pushes (required for mirroring),
+        and, when provision_status_var is enabled, upserts the GITHUB_REPO CI/CD
+        variable (reusing the project lookup done here).
         """
         if not self.token:
              return
@@ -78,6 +86,12 @@ class GitLabProvider(Provider):
             project_data = r.json()
             project_id = project_data['id']
             default_branch = project_data.get('default_branch', 'main')
+
+            # Provision the GITHUB_REPO CI/CD variable so runners can report CI
+            # checks back to GitHub (see _upsert_ci_variable). Best-effort: any
+            # failure is logged and does not block the mirror push.
+            if self.provision_status_var and repo.full_name:
+                self._provision_github_repo_var(api_base, headers, project_id, repo.full_name)
             
             # 2. Check Protection Rules
             # GET /projects/:id/protected_branches/:name
@@ -123,6 +137,34 @@ class GitLabProvider(Provider):
             logger.warning(f"[{repo.name}] Failed to update branch protection: HTTP {status}{hint}: {e}")
         except Exception as e:
             logger.warning(f"[{repo.name}] Failed to update branch protection (ignoring): {e}")
+
+    def _provision_github_repo_var(self, api_base, headers, project_id, value):
+        """
+        Creates or updates the project-level GITHUB_REPO CI/CD variable (best-effort).
+
+        Tries PUT (update) first; a 404 means the variable doesn't exist yet, so
+        we POST (create). The variable is non-secret and unprotected so it is
+        available to unprotected feature-branch pipelines. Any error is logged
+        and swallowed so provisioning never blocks the mirror push.
+        """
+        key = "GITHUB_REPO"
+        var_url = f"{api_base}/projects/{project_id}/variables/{key}"
+        try:
+            r_put = requests.put(var_url, headers=headers, json={"value": value}, timeout=10)
+            if r_put.status_code == 404:
+                r_post = requests.post(
+                    f"{api_base}/projects/{project_id}/variables",
+                    headers=headers,
+                    json={"key": key, "value": value, "masked": False, "protected": False},
+                    timeout=10,
+                )
+                r_post.raise_for_status()
+                logger.info(f"[{value}] Created GitLab CI/CD variable {key}={value}.")
+            else:
+                r_put.raise_for_status()
+                logger.debug(f"[{value}] Updated GitLab CI/CD variable {key}={value}.")
+        except Exception as e:
+            logger.warning(f"Failed to provision GitLab CI/CD variable {key} for project {project_id}: {e}")
 
     def get_remote_url(self, repo: Repository) -> str:
         """

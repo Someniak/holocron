@@ -50,6 +50,7 @@ def parse_args():
     parser.add_argument("--backup-only", action="store_true", default=get_bool_env("HOLOCRON_BACKUP_ONLY"), help="Mirror locally only, skip pushing to destination")
     parser.add_argument("--checkout", action="store_true", default=get_bool_env("HOLOCRON_CHECKOUT"), help="Create a checkout of the repository alongside the mirror")
     parser.add_argument("--gitlab-namespace", type=str, default=GITLAB_NAMESPACE, help="GitLab namespace (User or Group) to push to")
+    parser.add_argument("--github-status", action="store_true", default=get_bool_env("HOLOCRON_GITHUB_STATUS"), help="Provision a per-project GITHUB_REPO CI/CD variable on GitLab so runners can report CI checks back to the GitHub commit (requires GitHub source, GitLab destination)")
 
     # Webhook listener (push-triggered syncs). Runs alongside --watch.
     parser.add_argument("--webhook", action="store_true", default=get_bool_env("HOLOCRON_WEBHOOK"), help="Start an HTTP listener that syncs a repo when GitHub POSTs a push event")

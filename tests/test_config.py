@@ -1,5 +1,4 @@
 import sys
-import pytest
 from unittest.mock import patch
 from holocron.config import parse_args
 

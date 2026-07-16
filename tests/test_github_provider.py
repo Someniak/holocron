@@ -91,6 +91,25 @@ def test_fetch_repos_with_orgs(mock_get_pages):
     assert names == {'u1', 'u2', 'o1'}
 
 
+@patch("holocron.providers.github.GitHubProvider._get_all_pages")
+def test_fetch_repos_captures_full_name(mock_get_pages):
+    """full_name (owner/repo) is carried onto the Repository for CI provisioning."""
+    mock_get_pages.side_effect = [
+        [{'id': 1, 'name': 'r', 'clone_url': 'http://r', 'size': 1, 'full_name': 'acme/r'}],
+        [],  # no orgs
+    ]
+    provider = GitHubProvider(token="token")
+    repos = provider.fetch_repos()
+    assert len(repos) == 1
+    assert repos[0].full_name == "acme/r"
+
+
+def test_to_repository_full_name_defaults_none_when_absent():
+    provider = GitHubProvider(token="token")
+    repo = provider._to_repository({'id': 1, 'name': 'r', 'clone_url': 'http://r', 'size': 1})
+    assert repo.full_name is None
+
+
 # --- get_remote_url host-pinning (token exfil protection) ---
 
 def test_get_remote_url_injects_token_for_matching_host():
