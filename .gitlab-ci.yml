@@ -6,6 +6,18 @@
 #   .gitlab/ci/test.yml           pytest + PyPI smoke test (mirrors GitHub CI)
 #   .gitlab/ci/build.yml          Kaniko container image build/push (manual)
 
+# Run pipelines for merge requests, branch pushes, and tags -- but never a
+# duplicate branch pipeline when the branch has an open MR. Holocron mirrors
+# with `git push --mirror` (branches only, no MRs), so the branch rule is what
+# gives the GitLab copy per-push test coverage.
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS'
+      when: never
+    - if: '$CI_COMMIT_BRANCH'
+    - if: '$CI_COMMIT_TAG'
+
 stages:
   - test
   - build
