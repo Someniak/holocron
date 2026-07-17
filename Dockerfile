@@ -1,13 +1,22 @@
 # syntax=docker/dockerfile:1
 
+# Base images are parameterized so the internal GitLab/Kaniko build can pull them
+# through the ProGet mirror (those runners have no public-registry egress), while
+# the public GitHub Actions build uses the upstream defaults below. Override with
+# --build-arg PYTHON_IMAGE=... --build-arg UV_IMAGE=...
+ARG PYTHON_IMAGE=python:3.14-alpine
+ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.10.10
+
+# Pinned, statically-linked uv binary (musl-compatible, works on Alpine).
+FROM ${UV_IMAGE} AS uv
+
 # ---- Build stage ------------------------------------------------------------
 # Install locked dependencies and the project itself into a self-contained
 # virtualenv using uv + uv.lock, so the image ships the exact, pinned (and
 # CVE-patched) versions that are tested in CI.
-FROM python:3.14-alpine AS build
+FROM ${PYTHON_IMAGE} AS build
 
-# Pinned, statically-linked uv binary (musl-compatible, works on Alpine).
-COPY --from=ghcr.io/astral-sh/uv:0.10.10 /uv /uvx /bin/
+COPY --from=uv /uv /uvx /bin/
 
 # Use the base image's interpreter; never download a managed Python.
 ENV UV_PYTHON=python3.14 \
@@ -31,7 +40,7 @@ COPY src ./src
 RUN uv sync --frozen --no-dev --no-editable
 
 # ---- Runtime stage ----------------------------------------------------------
-FROM python:3.14-alpine
+FROM ${PYTHON_IMAGE}
 
 # git is required at runtime for mirroring; openssl generates the self-signed
 # webhook TLS certificate in the entrypoint.
