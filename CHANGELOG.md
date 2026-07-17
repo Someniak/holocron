@@ -3,6 +3,8 @@
 
 ## Unreleased
 
+## v1.6.6 - 2026-07-17
+
 ### Infrastructure
 
 - Correct the GitLab container build's Alpine mirror URL. ProGet serves a single
