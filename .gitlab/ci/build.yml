@@ -50,6 +50,8 @@
 
 # Merge requests: build only, to validate the Dockerfile without publishing.
 # Manual: start it from the MR pipeline / Pipelines view when you want it.
+# No *kaniko-auth: --no-push needs no registry credentials, so this runs on
+# unprotected MR branches without the (protected) ARTIFACTORY_* variables.
 docker-build:
   extends:
     - .container-build
@@ -59,7 +61,6 @@ docker-build:
       when: manual
       allow_failure: true
   script:
-    - *kaniko-auth
     - /kaniko/executor --context "$CI_PROJECT_DIR" --dockerfile "$CI_PROJECT_DIR/Dockerfile" --no-push
 
 # Default branch and tags: build and push to Artifactory, automatically.
@@ -67,10 +68,19 @@ docker-build:
 # publishes the matching Artifactory image here with no manual step. The
 # `&& $ARTIFACTORY_IMAGE` guard means the job only exists when Artifactory is
 # configured -- otherwise it is skipped, not failed.
+#
+# `environment: artifactory` records each publish under Operate -> Environments
+# (deployment history) and lets you scope the push creds to that environment.
+# Mark ARTIFACTORY_USER / ARTIFACTORY_TOKEN as Protected + Masked so they are
+# only injected on protected branches/tags; protect the release tags (e.g. v*)
+# too, or a tag pipeline runs without creds and fails.
 docker-publish:
   extends:
     - .container-build
     - .github-check
+  environment:
+    name: artifactory
+    url: https://artifactory.aparty.blue-yard.be
   rules:
     - if: '$CI_COMMIT_TAG && $ARTIFACTORY_IMAGE'
       variables:
