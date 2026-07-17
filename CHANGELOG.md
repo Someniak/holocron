@@ -3,8 +3,16 @@
 
 ## Unreleased
 
+## v1.6.1 - 2026-07-17
+
 ### Infrastructure
 
+- Run the GitHub Actions test suite on the mirrored GitLab copy. A thin
+  `.gitlab-ci.yml` includes split job files under `.gitlab/ci/` that run pytest
+  and a PyPI package smoke test on merge requests, branch pushes, and mirrored
+  tags, and report each job's result back to the GitHub commit as
+  `ci/gitlab/<job>` (seeded as pending at pipeline start so all checks appear
+  together).
 - Publish the internal container image to Artifactory automatically from GitLab
   CI. The `docker-publish` job builds and pushes on default-branch commits
   (`:latest` + `:<short-sha>`) and on mirrored release tags (`:<tag>` +
