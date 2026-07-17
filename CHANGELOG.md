@@ -3,6 +3,16 @@
 
 ## Unreleased
 
+### Infrastructure
+
+- Correct the GitLab container build's Alpine mirror URL. ProGet serves a single
+  merged apk index at `<feed>/<arch>/APKINDEX.tar.gz`, not the public CDN's
+  `vX.Y/main` layout that v1.6.5 wrote -- so the build now points `APK_REPO_URL`
+  at the ProGet apk feed (`/apk/alpine`), writes it as the sole repository line,
+  and installs `--allow-untrusted` (ProGet's index is not signed by Alpine's
+  built-in keys). A plain `docker build` and the GitHub Actions build are
+  unchanged (the base image's own Alpine CDN repositories are left untouched).
+
 ## v1.6.5 - 2026-07-17
 
 ### Infrastructure

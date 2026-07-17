@@ -59,19 +59,22 @@ FROM ${PYTHON_IMAGE}
 # git is required at runtime for mirroring; openssl generates the self-signed
 # webhook TLS certificate in the entrypoint.
 #
-# apk's package repositories are parameterized for the same reason as the base
-# images and PyPI index above: the egress-restricted GitLab/Kaniko runners
-# cannot reach the public Alpine CDN, so that build overrides APK_REPO_URL with
-# the Artifactory Alpine mirror. The default is the public Alpine CDN, so a plain
-# `docker build` (and the GitHub Actions build) works with no build-args. The
-# Alpine branch (e.g. v3.24) is derived from the base image so this keeps working
-# across python:*-alpine bumps.
-ARG APK_REPO_URL=https://dl-cdn.alpinelinux.org/alpine
-RUN ALPINE_BRANCH="v$(cut -d. -f1,2 /etc/alpine-release)" \
-    && printf '%s/%s/main\n%s/%s/community\n' \
-        "$APK_REPO_URL" "$ALPINE_BRANCH" "$APK_REPO_URL" "$ALPINE_BRANCH" \
-        > /etc/apk/repositories \
-    && apk add --no-cache git openssl
+# apk's repository is parameterized for the same reason as the base images and
+# PyPI index above: the egress-restricted GitLab/Kaniko runners cannot reach the
+# public Alpine CDN. When APK_REPO_URL is set (the GitLab build) it points at the
+# ProGet Alpine feed, which serves ONE merged index at <feed>/<arch>/APKINDEX.tar.gz
+# (all branches/sections flattened) -- so the repositories file becomes that single
+# base URL, with NO vX.Y/main split, and the install uses --allow-untrusted because
+# ProGet's merged index is not signed by Alpine's built-in keys. The empty default
+# (public GitHub Actions build / plain `docker build`) leaves the base image's own
+# Alpine CDN repositories untouched.
+ARG APK_REPO_URL=
+RUN if [ -n "$APK_REPO_URL" ]; then \
+        echo "${APK_REPO_URL}/" > /etc/apk/repositories \
+        && apk add --no-cache --allow-untrusted git openssl; \
+    else \
+        apk add --no-cache git openssl; \
+    fi
 
 WORKDIR /app
 
