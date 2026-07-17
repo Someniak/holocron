@@ -3,6 +3,13 @@
 
 ## Unreleased
 
+### Infrastructure
+
+- Publish the Artifactory image on release tags only, not on every default-branch
+  commit. A release commit is both `main`'s tip and the tag, so publishing on
+  both built the image twice; now the tag pipeline owns the publish and the
+  branch pipeline runs the tests. Tests/smoke no longer run on tag pipelines.
+
 ## v1.6.2 - 2026-07-17
 
 ### Infrastructure
