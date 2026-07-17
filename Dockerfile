@@ -20,8 +20,14 @@ FROM ${PYTHON_IMAGE} AS build
 
 COPY --from=uv /uv /uvx /bin/
 
-# Re-declare the global ARG so it is in scope for the ENV below.
+# Re-declare the global ARGs so they are in scope below.
 ARG UV_INDEX_URL
+# Lock mode for `uv sync`. Public builds keep `--frozen` to install the exact
+# pinned versions from uv.lock (whose URLs point at public PyPI). The GitLab
+# build overrides this to empty so uv resolves through the ProGet mirror
+# (UV_DEFAULT_INDEX) instead of replaying uv.lock's unreachable pythonhosted
+# URLs -- matching how the CI test job already resolves.
+ARG UV_LOCK_MODE=--frozen
 
 # Use the base image's interpreter; never download a managed Python.
 # UV_DEFAULT_INDEX points uv at the PyPI index (public by default; the ProGet
@@ -37,7 +43,7 @@ WORKDIR /app
 
 # Resolve dependencies first so this layer is cached until pyproject/uv.lock change.
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-dev --no-install-project
+RUN uv sync ${UV_LOCK_MODE} --no-dev --no-install-project
 
 # Install the project itself against the locked environment. --no-editable
 # copies the package into site-packages instead of linking to ./src, so the
@@ -45,7 +51,7 @@ RUN uv sync --frozen --no-dev --no-install-project
 # readable by the unprivileged user.
 COPY README.md ./
 COPY src ./src
-RUN uv sync --frozen --no-dev --no-editable
+RUN uv sync ${UV_LOCK_MODE} --no-dev --no-editable
 
 # ---- Runtime stage ----------------------------------------------------------
 FROM ${PYTHON_IMAGE}
