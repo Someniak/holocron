@@ -6,7 +6,6 @@
 # `docker-build` (--no-push) is a manual Dockerfile smoke test on merge requests
 # (a play button in the MR pipeline). `docker-publish` builds and pushes to
 # Artifactory automatically on default-branch commits and on mirrored tags.
-# To build and push from your workstation instead, use scripts/build-push.sh.
 #
 # Every job extends .github-check (see github-status.yml) so its result is
 # reported back to the mirrored GitHub commit when GITHUB_REPO /
