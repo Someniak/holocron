@@ -48,7 +48,10 @@
   # uses) only here. Verify the python path resolves against your feed's docker.io
   # connector -- some ProGet setups omit the `library/` segment.
   variables:
-    KANIKO_BASE_ARGS: "--build-arg PYTHON_IMAGE=artifactory.aparty.blue-yard.be/containers/library/python:3.14-alpine --build-arg UV_IMAGE=artifactory.aparty.blue-yard.be/containers/astral-sh/uv:0.10.10 --build-arg UV_INDEX_URL=https://artifactory.aparty.blue-yard.be/pypi/pypi/simple/"
+    # UV_LOCK_MODE="" drops --frozen so uv resolves through the ProGet mirror
+    # (UV_DEFAULT_INDEX) rather than replaying uv.lock's public-PyPI URLs, which
+    # the egress-restricted runners cannot reach.
+    KANIKO_BASE_ARGS: "--build-arg PYTHON_IMAGE=artifactory.aparty.blue-yard.be/containers/library/python:3.14-alpine --build-arg UV_IMAGE=artifactory.aparty.blue-yard.be/containers/astral-sh/uv:0.10.10 --build-arg UV_INDEX_URL=https://artifactory.aparty.blue-yard.be/pypi/pypi/simple/ --build-arg UV_LOCK_MODE="
   image:
     # Pulled via ProGet (artifactory.aparty.blue-yard.be), which proxies and
     # caches gcr.io/kaniko-project/executor on first request.
