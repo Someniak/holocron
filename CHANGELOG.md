@@ -3,6 +3,16 @@
 
 ## Unreleased
 
+### Infrastructure
+
+- Route the GitLab container build's `apk add git openssl` through the
+  Artifactory Alpine mirror. The egress-restricted runners cannot reach the
+  public Alpine CDN, so apk's TLS fetch failed and `git`/`openssl` resolved to
+  "no such package"; the repositories are now parameterized via an
+  `APK_REPO_URL` build arg (defaulting to the public Alpine CDN so a plain
+  `docker build` and the GitHub Actions build are unchanged). The Alpine branch
+  is derived from `/etc/alpine-release`, so it survives `python:*-alpine` bumps.
+
 ## v1.6.4 - 2026-07-17
 
 ### Infrastructure
