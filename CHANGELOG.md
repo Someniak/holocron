@@ -3,6 +3,17 @@
 
 ## Unreleased
 
+## v1.6.2 - 2026-07-17
+
+### Infrastructure
+
+- Pull the Dockerfile's base images through the ProGet mirror in the GitLab
+  container build. The base images are now parameterized (`PYTHON_IMAGE`,
+  `UV_IMAGE` build args) defaulting to the public upstreams, so the GitHub
+  Actions / GHCR build is unchanged, while the egress-restricted GitLab runners
+  pull them from `artifactory.aparty.blue-yard.be` instead of timing out on
+  `docker.io` / `ghcr.io`.
+
 ## v1.6.1 - 2026-07-17
 
 ### Infrastructure
