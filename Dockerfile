@@ -1,11 +1,13 @@
 # syntax=docker/dockerfile:1
 
-# Base images are parameterized so the internal GitLab/Kaniko build can pull them
-# through the ProGet mirror (those runners have no public-registry egress), while
-# the public GitHub Actions build uses the upstream defaults below. Override with
-# --build-arg PYTHON_IMAGE=... --build-arg UV_IMAGE=...
+# Base images and the PyPI index are parameterized so the internal GitLab/Kaniko
+# build can pull them through the ProGet mirror (those runners have no public
+# egress), while the public GitHub Actions build uses the upstream defaults below.
+# Override with --build-arg PYTHON_IMAGE=... --build-arg UV_IMAGE=... --build-arg
+# UV_INDEX_URL=...
 ARG PYTHON_IMAGE=python:3.14-alpine
 ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.10.10
+ARG UV_INDEX_URL=https://pypi.org/simple
 
 # Pinned, statically-linked uv binary (musl-compatible, works on Alpine).
 FROM ${UV_IMAGE} AS uv
@@ -18,12 +20,18 @@ FROM ${PYTHON_IMAGE} AS build
 
 COPY --from=uv /uv /uvx /bin/
 
+# Re-declare the global ARG so it is in scope for the ENV below.
+ARG UV_INDEX_URL
+
 # Use the base image's interpreter; never download a managed Python.
+# UV_DEFAULT_INDEX points uv at the PyPI index (public by default; the ProGet
+# mirror in the GitLab build, whose runners have no public PyPI egress).
 ENV UV_PYTHON=python3.14 \
     UV_PYTHON_DOWNLOADS=0 \
     UV_PROJECT_ENVIRONMENT=/app/.venv \
     UV_COMPILE_BYTECODE=1 \
-    UV_LINK_MODE=copy
+    UV_LINK_MODE=copy \
+    UV_DEFAULT_INDEX=${UV_INDEX_URL}
 
 WORKDIR /app
 
