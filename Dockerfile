@@ -58,7 +58,20 @@ FROM ${PYTHON_IMAGE}
 
 # git is required at runtime for mirroring; openssl generates the self-signed
 # webhook TLS certificate in the entrypoint.
-RUN apk add --no-cache git openssl
+#
+# apk's package repositories are parameterized for the same reason as the base
+# images and PyPI index above: the egress-restricted GitLab/Kaniko runners
+# cannot reach the public Alpine CDN, so that build overrides APK_REPO_URL with
+# the Artifactory Alpine mirror. The default is the public Alpine CDN, so a plain
+# `docker build` (and the GitHub Actions build) works with no build-args. The
+# Alpine branch (e.g. v3.24) is derived from the base image so this keeps working
+# across python:*-alpine bumps.
+ARG APK_REPO_URL=https://dl-cdn.alpinelinux.org/alpine
+RUN ALPINE_BRANCH="v$(cut -d. -f1,2 /etc/alpine-release)" \
+    && printf '%s/%s/main\n%s/%s/community\n' \
+        "$APK_REPO_URL" "$ALPINE_BRANCH" "$APK_REPO_URL" "$ALPINE_BRANCH" \
+        > /etc/apk/repositories \
+    && apk add --no-cache git openssl
 
 WORKDIR /app
 

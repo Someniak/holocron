@@ -51,7 +51,13 @@
     # UV_LOCK_MODE="" drops --frozen so uv resolves through the ProGet mirror
     # (UV_DEFAULT_INDEX) rather than replaying uv.lock's public-PyPI URLs, which
     # the egress-restricted runners cannot reach.
-    KANIKO_BASE_ARGS: "--build-arg PYTHON_IMAGE=artifactory.aparty.blue-yard.be/containers/library/python:3.14-alpine --build-arg UV_IMAGE=artifactory.aparty.blue-yard.be/containers/astral-sh/uv:0.10.10 --build-arg UV_INDEX_URL=https://artifactory.aparty.blue-yard.be/pypi/pypi/simple/ --build-arg UV_LOCK_MODE="
+    # APK_REPO_URL routes the runtime stage's `apk add git openssl` through the
+    # Artifactory Alpine mirror; without it apk hits the public Alpine CDN
+    # (dl-cdn.alpinelinux.org), which the egress-restricted runners cannot reach
+    # (TLS handshake failure -> "no such package"). The Dockerfile appends the
+    # Alpine branch (v3.24) and /main,/community itself. Verify this base path
+    # matches your Artifactory Alpine remote repo key.
+    KANIKO_BASE_ARGS: "--build-arg PYTHON_IMAGE=artifactory.aparty.blue-yard.be/containers/library/python:3.14-alpine --build-arg UV_IMAGE=artifactory.aparty.blue-yard.be/containers/astral-sh/uv:0.10.10 --build-arg UV_INDEX_URL=https://artifactory.aparty.blue-yard.be/pypi/pypi/simple/ --build-arg UV_LOCK_MODE= --build-arg APK_REPO_URL=https://artifactory.aparty.blue-yard.be/alpine"
   image:
     # Pulled via ProGet (artifactory.aparty.blue-yard.be), which proxies and
     # caches gcr.io/kaniko-project/executor on first request.
