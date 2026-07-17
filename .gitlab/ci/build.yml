@@ -3,9 +3,9 @@
 # GHCR) so the mirrored GitLab copy produces its own images.
 #
 # Builder: Kaniko (rootless, no Docker daemon / privileged runner required).
-# All jobs are manual: they show up as play buttons in the GitLab Pipelines /
-# merge-request UI and only run when you start them. The `docker-build`
-# (--no-push) job doubles as the Dockerfile build smoke test.
+# `docker-build` (--no-push) is a manual Dockerfile smoke test on merge requests
+# (a play button in the MR pipeline). `docker-publish` builds and pushes to
+# Artifactory automatically on default-branch commits and on mirrored tags.
 #
 # Every job extends .github-check (see github-status.yml) so its result is
 # reported back to the mirrored GitHub commit when GITHUB_REPO /
@@ -50,6 +50,8 @@
 
 # Merge requests: build only, to validate the Dockerfile without publishing.
 # Manual: start it from the MR pipeline / Pipelines view when you want it.
+# No *kaniko-auth: --no-push needs no registry credentials, so this runs on
+# unprotected MR branches without the (protected) ARTIFACTORY_* variables.
 docker-build:
   extends:
     - .container-build
@@ -59,24 +61,31 @@ docker-build:
       when: manual
       allow_failure: true
   script:
-    - *kaniko-auth
     - /kaniko/executor --context "$CI_PROJECT_DIR" --dockerfile "$CI_PROJECT_DIR/Dockerfile" --no-push
 
-# Default branch and tags: build and push to Artifactory.
-# Manual: start it from the Pipelines view when you want to publish an image.
+# Default branch and tags: build and push to Artifactory, automatically.
+# Tags are mirrored from GitHub (git push --mirror), so cutting a GitHub release
+# publishes the matching Artifactory image here with no manual step. The
+# `&& $ARTIFACTORY_IMAGE` guard means the job only exists when Artifactory is
+# configured -- otherwise it is skipped, not failed.
+#
+# `environment: artifactory` records each publish under Operate -> Environments
+# (deployment history) and lets you scope the push creds to that environment.
+# Mark ARTIFACTORY_USER / ARTIFACTORY_TOKEN as Protected + Masked so they are
+# only injected on protected branches/tags; protect the release tags (e.g. v*)
+# too, or a tag pipeline runs without creds and fails.
 docker-publish:
   extends:
     - .container-build
     - .github-check
+  environment:
+    name: artifactory
+    url: https://artifactory.aparty.blue-yard.be
   rules:
-    - if: '$CI_COMMIT_TAG'
-      when: manual
-      allow_failure: true
+    - if: '$CI_COMMIT_TAG && $ARTIFACTORY_IMAGE'
       variables:
         KANIKO_DESTINATIONS: "--destination $ARTIFACTORY_IMAGE:$CI_COMMIT_TAG --destination $ARTIFACTORY_IMAGE:latest"
-    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
-      when: manual
-      allow_failure: true
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $ARTIFACTORY_IMAGE'
       variables:
         KANIKO_DESTINATIONS: "--destination $ARTIFACTORY_IMAGE:latest --destination $ARTIFACTORY_IMAGE:$CI_COMMIT_SHORT_SHA"
   script:
