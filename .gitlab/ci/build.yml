@@ -42,6 +42,13 @@
 
 .container-build:
   stage: build
+  # The Dockerfile's base images are pulled through the ProGet mirror because the
+  # runners have no public-registry egress. These --build-arg overrides replace
+  # the Dockerfile's public defaults (which the GitHub Actions build still uses)
+  # only here. Verify the python path resolves against your feed's docker.io
+  # connector -- some ProGet setups omit the `library/` segment.
+  variables:
+    KANIKO_BASE_ARGS: "--build-arg PYTHON_IMAGE=artifactory.aparty.blue-yard.be/containers/library/python:3.14-alpine --build-arg UV_IMAGE=artifactory.aparty.blue-yard.be/containers/astral-sh/uv:0.10.10"
   image:
     # Pulled via ProGet (artifactory.aparty.blue-yard.be), which proxies and
     # caches gcr.io/kaniko-project/executor on first request.
@@ -61,7 +68,7 @@ docker-build:
       when: manual
       allow_failure: true
   script:
-    - /kaniko/executor --context "$CI_PROJECT_DIR" --dockerfile "$CI_PROJECT_DIR/Dockerfile" --no-push
+    - /kaniko/executor --context "$CI_PROJECT_DIR" --dockerfile "$CI_PROJECT_DIR/Dockerfile" $KANIKO_BASE_ARGS --no-push
 
 # Default branch and tags: build and push to Artifactory, automatically.
 # Tags are mirrored from GitHub (git push --mirror), so cutting a GitHub release
@@ -90,4 +97,4 @@ docker-publish:
         KANIKO_DESTINATIONS: "--destination $ARTIFACTORY_IMAGE:latest --destination $ARTIFACTORY_IMAGE:$CI_COMMIT_SHORT_SHA"
   script:
     - *kaniko-auth
-    - /kaniko/executor --context "$CI_PROJECT_DIR" --dockerfile "$CI_PROJECT_DIR/Dockerfile" $KANIKO_DESTINATIONS
+    - /kaniko/executor --context "$CI_PROJECT_DIR" --dockerfile "$CI_PROJECT_DIR/Dockerfile" $KANIKO_BASE_ARGS $KANIKO_DESTINATIONS
