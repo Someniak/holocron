@@ -4,8 +4,8 @@
 #
 # Builder: Kaniko (rootless, no Docker daemon / privileged runner required).
 # `docker-build` (--no-push) is a manual Dockerfile smoke test on merge requests
-# (a play button in the MR pipeline). `docker-publish` builds and pushes to
-# Artifactory automatically on default-branch commits and on mirrored tags.
+# (a play button in the MR pipeline). `docker-publish` builds and pushes a
+# versioned image to Artifactory automatically on each mirrored release tag.
 #
 # Every job extends .github-check (see github-status.yml) so its result is
 # reported back to the mirrored GitHub commit when GITHUB_REPO /
@@ -88,13 +88,14 @@ docker-publish:
   environment:
     name: artifactory
     url: https://artifactory.aparty.blue-yard.be
+  # Tags only: publish a versioned image on each mirrored release tag. A release
+  # commit is both main's tip and the tag, so publishing on the default branch
+  # too would build the image twice; the tag pipeline owns the publish and the
+  # branch pipeline runs the tests.
   rules:
     - if: '$CI_COMMIT_TAG && $ARTIFACTORY_IMAGE'
       variables:
         KANIKO_DESTINATIONS: "--destination $ARTIFACTORY_IMAGE:$CI_COMMIT_TAG --destination $ARTIFACTORY_IMAGE:latest"
-    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $ARTIFACTORY_IMAGE'
-      variables:
-        KANIKO_DESTINATIONS: "--destination $ARTIFACTORY_IMAGE:latest --destination $ARTIFACTORY_IMAGE:$CI_COMMIT_SHORT_SHA"
   script:
     - *kaniko-auth
     - /kaniko/executor --context "$CI_PROJECT_DIR" --dockerfile "$CI_PROJECT_DIR/Dockerfile" $KANIKO_BASE_ARGS $KANIKO_DESTINATIONS
