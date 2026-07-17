@@ -3,6 +3,16 @@
 
 ## Unreleased
 
+## v1.6.4 - 2026-07-17
+
+### Infrastructure
+
+- Resolve the GitLab container build's Python dependencies through the ProGet
+  mirror instead of replaying `uv.lock`'s public-PyPI URLs, so the
+  egress-restricted runners build without reaching `files.pythonhosted.org`. The
+  lock mode is a build arg (`UV_LOCK_MODE`), so the public GitHub Actions build
+  still installs the exact pinned versions with `uv sync --frozen`.
+
 ## v1.6.3 - 2026-07-17
 
 ### Infrastructure
