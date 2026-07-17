@@ -123,6 +123,31 @@ docker run -d --user "$(id -u):$(id -g)" \
 > writable by the running UID too — or mount a cert you generated yourself, which
 > is used as-is (never regenerated).
 
+## 📦 Building and publishing to Artifactory
+
+The public image is published to GHCR by GitHub Actions. A separate internal
+image is published to Artifactory from GitLab:
+
+- **Automatically via CI** — the GitLab `docker-publish` job (Kaniko) builds and
+  pushes on every default-branch commit (`:latest` + `:<short-sha>`) and on each
+  mirrored tag (`:<tag>` + `:latest`). Tags are carried over from GitHub by the
+  mirror, so cutting a GitHub release publishes the matching Artifactory image
+  with no manual step. It runs only where the `ARTIFACTORY_*` CI/CD variables
+  are set.
+
+- **Locally from your workstation** — same image path and tags, using your local
+  Docker:
+
+  ```bash
+  ./scripts/build-push.sh            # -> :latest and :<git-short-sha>
+  ./scripts/build-push.sh v1.6.1     # -> :v1.6.1 and :latest
+  ```
+
+  Set `ARTIFACTORY_REGISTRY`, `ARTIFACTORY_IMAGE`, `ARTIFACTORY_USER`, and
+  `ARTIFACTORY_TOKEN` in your environment or a local `.env`. The image is built
+  for `linux/amd64` by default (override with `PLATFORM=...`) to match the CI
+  runners regardless of your host architecture.
+
 ## ⚠️ Notes
 
 - **URL Construction**: Syncing works by cloning from Source and pushing to Destination.
