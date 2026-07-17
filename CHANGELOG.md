@@ -3,6 +3,8 @@
 
 ## Unreleased
 
+## v1.6.5 - 2026-07-17
+
 ### Infrastructure
 
 - Route the GitLab container build's `apk add git openssl` through the
