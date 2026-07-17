@@ -42,13 +42,13 @@
 
 .container-build:
   stage: build
-  # The Dockerfile's base images are pulled through the ProGet mirror because the
-  # runners have no public-registry egress. These --build-arg overrides replace
-  # the Dockerfile's public defaults (which the GitHub Actions build still uses)
-  # only here. Verify the python path resolves against your feed's docker.io
+  # The Dockerfile's base images AND its PyPI index are routed through the ProGet
+  # mirror because the runners have no public egress. These --build-arg overrides
+  # replace the Dockerfile's public defaults (which the GitHub Actions build still
+  # uses) only here. Verify the python path resolves against your feed's docker.io
   # connector -- some ProGet setups omit the `library/` segment.
   variables:
-    KANIKO_BASE_ARGS: "--build-arg PYTHON_IMAGE=artifactory.aparty.blue-yard.be/containers/library/python:3.14-alpine --build-arg UV_IMAGE=artifactory.aparty.blue-yard.be/containers/astral-sh/uv:0.10.10"
+    KANIKO_BASE_ARGS: "--build-arg PYTHON_IMAGE=artifactory.aparty.blue-yard.be/containers/library/python:3.14-alpine --build-arg UV_IMAGE=artifactory.aparty.blue-yard.be/containers/astral-sh/uv:0.10.10 --build-arg UV_INDEX_URL=https://artifactory.aparty.blue-yard.be/pypi/pypi/simple/"
   image:
     # Pulled via ProGet (artifactory.aparty.blue-yard.be), which proxies and
     # caches gcr.io/kaniko-project/executor on first request.
