@@ -3,12 +3,19 @@
 
 ## Unreleased
 
+## v1.6.3 - 2026-07-17
+
 ### Infrastructure
 
 - Publish the Artifactory image on release tags only, not on every default-branch
   commit. A release commit is both `main`'s tip and the tag, so publishing on
   both built the image twice; now the tag pipeline owns the publish and the
   branch pipeline runs the tests. Tests/smoke no longer run on tag pipelines.
+- Route the GitLab container build's `uv sync` through the ProGet PyPI mirror,
+  parameterized via a `UV_INDEX_URL` build arg (defaulting to public PyPI so the
+  GitHub Actions build is unchanged). The egress-restricted runners no longer
+  time out fetching dependencies from `files.pythonhosted.org` during the image
+  build.
 
 ## v1.6.2 - 2026-07-17
 

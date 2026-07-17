@@ -82,7 +82,7 @@ wheels = [
 
 [[package]]
 name = "holocron-sync"
-version = "1.6.2"
+version = "1.6.3"
 source = { editable = "." }
 dependencies = [
     { name = "python-dotenv" },
