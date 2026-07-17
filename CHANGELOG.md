@@ -3,6 +3,17 @@
 
 ## Unreleased
 
+### Infrastructure
+
+- Publish the internal container image to Artifactory automatically from GitLab
+  CI. The `docker-publish` job builds and pushes on default-branch commits
+  (`:latest` + `:<short-sha>`) and on mirrored release tags (`:<tag>` +
+  `:latest`), records each publish under a GitLab `artifactory` environment, and
+  is guarded so it is skipped where Artifactory is unconfigured. The `--no-push`
+  Dockerfile smoke test (`docker-build`) no longer requires registry
+  credentials, so the Artifactory push token can be a protected variable without
+  breaking merge-request validation.
+
 ## v1.6.0 - 2026-07-16
 
 ### Features
