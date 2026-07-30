@@ -22,6 +22,9 @@ You can configure Holocron entirely using Environment Variables. This is ideal f
 |----------|-------------|
 | `GITHUB_TOKEN` | GitHub Personal Access Token (PAT) with `repo` scope. |
 | `GITLAB_TOKEN` | GitLab Personal Access Token (PAT) with `read_api` and `write_repository` scopes. |
+| `AZURE_DEVOPS_TOKEN` | Azure DevOps PAT with the `Code (Read)` scope. Only needed with `HOLOCRON_SOURCE=azure`. |
+| `AZURE_DEVOPS_ORG_URL` | Azure DevOps organisation URL, e.g. `https://dev.azure.com/my-org`. Required with `HOLOCRON_SOURCE=azure`. |
+| `AZURE_DEVOPS_PROJECT` | Optional: limit the Azure DevOps source to a single project. |
 
 ### Core Settings
 

@@ -17,6 +17,18 @@ __license__ = "MIT"
 GITHUB_API_URL = os.environ.get("GITHUB_API_URL", "https://api.github.com")
 GITLAB_API_URL = os.environ.get("GITLAB_API_URL", "http://gitlab.local/api/v4")
 GITLAB_NAMESPACE = os.environ.get("GITLAB_NAMESPACE")
+# Full Azure DevOps organisation URL, e.g. https://dev.azure.com/my-org
+# (or the legacy https://my-org.visualstudio.com). No default: it is
+# organisation-specific and only required when Azure DevOps is the source.
+AZURE_DEVOPS_ORG_URL = os.environ.get("AZURE_DEVOPS_ORG_URL")
+AZURE_DEVOPS_PROJECT = os.environ.get("AZURE_DEVOPS_PROJECT")
+
+# Environment variable holding each provider's access token.
+TOKEN_ENV_VARS = {
+    "github": "GITHUB_TOKEN",
+    "gitlab": "GITLAB_TOKEN",
+    "azure": "AZURE_DEVOPS_TOKEN",
+}
 
 def parse_args():
     """
@@ -39,7 +51,7 @@ def parse_args():
     parser.add_argument("--verbose", action="store_true", default=get_bool_env("HOLOCRON_VERBOSE"), help="Print detailed logs")
     
     # Provider Selection
-    parser.add_argument("--source", type=str, choices=["github", "gitlab"], default=os.environ.get("HOLOCRON_SOURCE", "github"), help="Source provider (default: github)")
+    parser.add_argument("--source", type=str, choices=["github", "gitlab", "azure"], default=os.environ.get("HOLOCRON_SOURCE", "github"), help="Source provider (default: github). 'azure' is Azure DevOps Services (cloud), source-only.")
     parser.add_argument("--destination", type=str, choices=["github", "gitlab", "local"], default=os.environ.get("HOLOCRON_DESTINATION", "gitlab"), help="Destination provider (default: gitlab)")
 
     # value options
@@ -50,6 +62,8 @@ def parse_args():
     parser.add_argument("--backup-only", action="store_true", default=get_bool_env("HOLOCRON_BACKUP_ONLY"), help="Mirror locally only, skip pushing to destination")
     parser.add_argument("--checkout", action="store_true", default=get_bool_env("HOLOCRON_CHECKOUT"), help="Create a checkout of the repository alongside the mirror")
     parser.add_argument("--gitlab-namespace", type=str, default=GITLAB_NAMESPACE, help="GitLab namespace (User or Group) to push to")
+    parser.add_argument("--azure-org-url", type=str, default=AZURE_DEVOPS_ORG_URL, help="Azure DevOps organisation URL, e.g. https://dev.azure.com/my-org (required for --source azure)")
+    parser.add_argument("--azure-project", type=str, default=AZURE_DEVOPS_PROJECT, help="Limit the Azure DevOps source to a single project (default: every project in the organisation)")
     parser.add_argument("--github-status", action="store_true", default=get_bool_env("HOLOCRON_GITHUB_STATUS"), help="Provision a per-project GITHUB_REPO CI/CD variable on GitLab so runners can report CI checks back to the GitHub commit (requires GitHub source, GitLab destination)")
 
     # Webhook listener (push-triggered syncs). Runs alongside --watch.
@@ -61,30 +75,30 @@ def parse_args():
 
     return parser.parse_args()
 
-def validate_config(source, destination, backup_only=False):
+def validate_config(source, destination, backup_only=False, azure_org_url=None):
     """
     Validates environment variables and arguments.
-    Returns: (gh_token, gl_token)
+    Returns: a {provider_name: token} mapping (values may be None for providers
+    that are not in use).
     """
-    gh_token = os.environ.get("GITHUB_TOKEN")
-    gl_token = os.environ.get("GITLAB_TOKEN")
+    tokens = {name: os.environ.get(env) for name, env in TOKEN_ENV_VARS.items()}
 
     # Check source requirements
-    if source == "github" and not gh_token:
-        print("CRITICAL: Missing GITHUB_TOKEN (required for Source: GitHub).")
-        sys.exit(1)
-    if source == "gitlab" and not gl_token:
-        print("CRITICAL: Missing GITLAB_TOKEN (required for Source: GitLab).")
+    if not tokens.get(source):
+        print(f"CRITICAL: Missing {TOKEN_ENV_VARS[source]} (required for Source: {source}).")
         sys.exit(1)
 
-    # Check destination requirements
-    if not backup_only:
-        if destination == "github" and not gh_token:
-            print("CRITICAL: Missing GITHUB_TOKEN (required for Destination: GitHub).")
+    if source == "azure" and not (azure_org_url or AZURE_DEVOPS_ORG_URL):
+        print("CRITICAL: Missing AZURE_DEVOPS_ORG_URL / --azure-org-url "
+              "(required for Source: azure, e.g. https://dev.azure.com/my-org).")
+        sys.exit(1)
+
+    # Check destination requirements ('local' needs no token)
+    if not backup_only and destination in TOKEN_ENV_VARS:
+        if not tokens.get(destination):
+            print(f"CRITICAL: Missing {TOKEN_ENV_VARS[destination]} (required for Destination: {destination}).")
+            if destination == "gitlab":
+                print("Please set GITLAB_TOKEN or use --backup-only.")
             sys.exit(1)
-        if destination == "gitlab" and not gl_token:
-            print("CRITICAL: Missing GITLAB_TOKEN (required for Destination: GitLab).")
-            print("Please set GITLAB_TOKEN or use --backup-only.")
-            sys.exit(1)
-        
-    return gh_token, gl_token
+
+    return tokens

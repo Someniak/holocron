@@ -276,3 +276,69 @@ def test_run_sync_cycle_survives_fetch_failure(mock_logger):
     mock_logger.error.assert_called()
     log_calls = [str(c) for c in mock_logger.error.call_args_list]
     assert any("failed to fetch repositories" in c for c in log_calls)
+
+
+# --- Azure DevOps source wiring ---------------------------------------------
+
+def test_get_provider_builds_azure_source():
+    from holocron.__main__ import get_provider
+    from holocron.providers.azure import AzureDevOpsProvider
+
+    provider = get_provider(
+        "azure", "az_token", "https://api.github.com", "http://gitlab.local/api/v4",
+        azure_org_url="https://dev.azure.com/acme", azure_project="Proj",
+    )
+
+    assert isinstance(provider, AzureDevOpsProvider)
+    assert provider.org_url == "https://dev.azure.com/acme"
+    assert provider.project == "Proj"
+    assert provider.token == "az_token"
+
+
+@patch("holocron.__main__.parse_args")
+@patch.dict(os.environ, {"AZURE_DEVOPS_TOKEN": "az_token", "GITLAB_TOKEN": "gl_token"}, clear=True)
+@patch("requests.get")
+@patch("holocron.__main__.sync_one_repo")
+def test_main_azure_source_to_gitlab(mock_sync, mock_get, mock_parse):
+    """
+    End-to-end wiring: a stubbed Azure DevOps API drives one sync cycle and the
+    repository reaches sync_one_repo with an authenticated Azure clone URL.
+    """
+    args = argparse.Namespace(
+        watch=False, dry_run=False, concurrency=1, backup_only=False, window=10,
+        verbose=False, storage="/tmp/data", source="azure", destination="gitlab",
+        credits=False, gitlab_namespace="mirrors", checkout=False, interval=10,
+        azure_org_url="https://dev.azure.com/acme", azure_project=None,
+    )
+    mock_parse.return_value = args
+
+    repos_resp = MagicMock()
+    repos_resp.status_code = 200
+    repos_resp.headers = {"Content-Type": "application/json"}
+    repos_resp.raise_for_status.return_value = None
+    repos_resp.json.return_value = {"value": [{
+        "id": "abc", "name": "widgets", "project": {"name": "Proj"},
+        "defaultBranch": "refs/heads/main", "size": 1024,
+        "remoteUrl": "https://acme@dev.azure.com/acme/Proj/_git/widgets",
+    }]}
+
+    pushes_resp = MagicMock()
+    pushes_resp.status_code = 200
+    pushes_resp.headers = {"Content-Type": "application/json"}
+    pushes_resp.raise_for_status.return_value = None
+    pushes_resp.json.return_value = {"value": [{"date": "2024-05-04T10:11:12.1234567Z"}]}
+
+    mock_get.side_effect = [repos_resp, pushes_resp]
+
+    main()
+
+    mock_sync.assert_called_once()
+    kwargs = mock_sync.call_args[1]
+    repo = kwargs["repo"]
+    assert repo.name == "widgets"
+    assert kwargs["source_provider"].get_remote_url(repo) == (
+        "https://oauth2:az_token@dev.azure.com/acme/Proj/_git/widgets"
+    )
+    assert kwargs["destination_provider"].get_remote_url(repo) == (
+        "http://oauth2:gl_token@gitlab.local/mirrors/widgets.git"
+    )

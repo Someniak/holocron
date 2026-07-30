@@ -18,7 +18,7 @@
           \/
 ```
 
-**Holocron** is a powerful Python application designed to mirror your GitHub repositories to a local directory or a self-hosted GitLab instance. It supports parallel syncing, continuous watch mode, and local-only backups (no GitLab required).
+**Holocron** is a powerful Python application designed to mirror your GitHub, GitLab or Azure DevOps repositories to a local directory or a self-hosted GitLab instance. It supports parallel syncing, continuous watch mode, and local-only backups (no GitLab required).
 
 ## Why Holocron?
 > "Why not just run `git pull` and `git push` in a cron job?"
@@ -32,6 +32,10 @@ While a simple script works for one repo, managing hundreds requires a robust to
 5.  **Parallelism**: Syncs multiple repositories simultaneously, turning an hours-long serial backup into minutes.
 
 ## Features
+- **Supported Sources**:
+    - **GitHub** (github.com or GitHub Enterprise).
+    - **GitLab** (gitlab.com or self-hosted).
+    - **Azure DevOps Services** (cloud, `dev.azure.com`) — see [Azure DevOps as a source](#azure-devops-as-a-source).
 - **Supported Destinations**:
     - **GitLab**: Full mirror with automatic creation/updates (requires existing empty project or "create on push").
     - **Local Disk**: Create a local-only backup archive without needing a second Git server.
@@ -89,6 +93,9 @@ Holocron uses environment variables for secrets:
  | `GITLAB_TOKEN` | Your GitLab Personal Access Token (api scope) | No (if `--backup-only`) |
  | `GITLAB_API_URL` | URL to your GitLab API (default: `http://gitlab.local/api/v4`) | No (if `--backup-only`) |
  | `GITHUB_API_URL` | URL to your GitHub API (default: `https://api.github.com`) | No |
+ | `AZURE_DEVOPS_TOKEN` | Azure DevOps Personal Access Token | **Yes** (if `--source azure`) |
+ | `AZURE_DEVOPS_ORG_URL` | Azure DevOps organisation URL, e.g. `https://dev.azure.com/my-org` | **Yes** (if `--source azure`) |
+ | `AZURE_DEVOPS_PROJECT` | Limit the Azure DevOps source to one project (default: every project in the org) | No |
  | `HOLOCRON_WEBHOOK_SECRET` | Shared secret used to verify GitHub webhook signatures | **Yes** (if `--webhook`) |
  | `HOLOCRON_WEBHOOK_CERT` / `HOLOCRON_WEBHOOK_KEY` | TLS cert/key for the webhook listener (auto-generated in Docker) | No |
  
@@ -126,6 +133,18 @@ Holocron uses environment variables for secrets:
 
  > If a token lacks the branch-protection permission, Holocron logs a warning (with the HTTP status and a scope hint) and continues; the subsequent push simply fails for any protected branch rather than crashing the whole run.
 
+ #### Azure DevOps Token (`AZURE_DEVOPS_TOKEN`)
+
+ API calls made: `GET /_apis/git/repositories`,
+ `GET /_apis/git/repositories/{id}/pushes`, `git clone` — all read-only.
+
+ **As source (the only supported role)**
+ - Scope: **Code (Read)** (`vso.code`).
+ - The PAT is sent as HTTP Basic auth with an empty username, which is what
+   Azure DevOps expects for both the REST API and `git` over HTTPS.
+ - A PAT is bound to a single organisation (or "all accessible organisations");
+   mirror one organisation per Holocron instance.
+
 ### Command Line Arguments
 | Flag | Default | Description |
 | :--- | :--- | :--- |
@@ -144,6 +163,94 @@ Holocron uses environment variables for secrets:
 | `--webhook-cert` | _(none)_ | TLS certificate file — serves HTTPS (pair with `--webhook-key`) |
 | `--webhook-key` | _(none)_ | TLS private key file (pair with `--webhook-cert`) |
 | `--github-status` | False | Provision a per-project `GITHUB_REPO` CI/CD variable on GitLab so runners can report CI checks back to GitHub (GitHub→GitLab only) |
+| `--source` | `github` | Source provider: `github`, `gitlab` or `azure` |
+| `--destination` | `gitlab` | Destination provider: `github`, `gitlab` or `local` |
+| `--azure-org-url` | _(none)_ | Azure DevOps organisation URL (required for `--source azure`) |
+| `--azure-project` | _(none)_ | Limit the Azure DevOps source to a single project |
+
+### Azure DevOps as a source
+
+Holocron can mirror **from Azure DevOps Services** (the cloud edition, `dev.azure.com`)
+to GitLab or to local disk. Azure DevOps is **source-only** — Holocron does not create
+or push to Azure DevOps repositories.
+
+```bash
+export AZURE_DEVOPS_TOKEN="your_pat"
+export AZURE_DEVOPS_ORG_URL="https://dev.azure.com/my-org"
+export GITLAB_TOKEN="your_gitlab_pat"
+export GITLAB_API_URL="https://gitlab.example.com/api/v4"
+
+holocron --source azure --destination gitlab --gitlab-namespace mirrors
+```
+
+Without `--azure-project`, every repository in **every project** of the organisation is
+mirrored. The legacy `https://my-org.visualstudio.com` organisation URL works too — set
+`AZURE_DEVOPS_ORG_URL` to whichever host your clone URLs actually use, because the PAT is
+only ever sent to that host.
+
+**Creating the PAT**: Azure DevOps → *User settings* → *Personal access tokens* → *New
+Token*, scope **Code (Read)**. Copy it immediately; it is shown once.
+
+**How repository names are mapped.** Azure DevOps repository names may contain spaces and
+other characters that are not valid in a directory name, and they are only unique *within
+a project*. Holocron therefore slugifies each name to the `[A-Za-z0-9._-]` charset
+(`My Cool Repo` → `My-Cool-Repo`) and, when the same name exists in more than one project,
+qualifies it with the project (`Alpha/docs` → `Alpha-docs`). Every remapping is logged as a
+warning, so run once with `--dry-run` to review the destination names before mirroring.
+
+**What is skipped**: disabled repositories, and repositories with no default branch (an
+uninitialised repo has no refs to mirror).
+
+**Last-activity lookups**: the Azure DevOps repository list carries no timestamp, so
+`--window` filtering needs one extra `pushes` API call per repository per cycle. If that
+lookup fails, the repository is treated as recently pushed rather than being skipped.
+
+#### Testing an Azure DevOps mirror
+
+1. **Automated tests** (no network, no credentials — part of the normal suite):
+   ```bash
+   uv run pytest tests/test_azure_provider.py tests/test_azure_e2e.py -v
+   ```
+   `test_azure_provider.py` stubs `requests.get` with recorded Azure DevOps payloads and
+   covers pagination, name mapping, timestamp parsing and the credential host-pinning
+   rules. `test_azure_e2e.py` goes further: it serves a stub Azure DevOps API *and* a real
+   git repository from a loopback socket, then runs the actual sync engine against it, so
+   `git clone --mirror` really executes against the URL the provider builds.
+
+2. **Check the API and PAT by hand** before involving Holocron:
+   ```bash
+   curl -u :"$AZURE_DEVOPS_TOKEN" \
+     "$AZURE_DEVOPS_ORG_URL/_apis/git/repositories?api-version=7.1"
+   ```
+   A JSON document means the PAT works. **HTML** means it does not: Azure DevOps answers an
+   unauthenticated request with `203` and a sign-in page rather than a `401`. Holocron
+   detects this case and reports it as a token problem instead of a JSON parse error.
+
+3. **Dry run** — lists what would be mirrored, and shows the destination names after
+   slugifying, without cloning anything:
+   ```bash
+   holocron --source azure --destination local --dry-run --verbose
+   ```
+
+4. **Local backup** — a real clone with no GitLab involved:
+   ```bash
+   holocron --source azure --destination local --storage ./mirror-data --verbose
+   ls ./mirror-data          # one <repo>.git bare mirror per repository
+   ```
+
+5. **To GitLab** — point at a throwaway namespace first (a local
+   `gitlab/gitlab-ce` container or a personal group on gitlab.com):
+   ```bash
+   holocron --source azure --destination gitlab --gitlab-namespace mirror-test --verbose
+   ```
+   Verify on the GitLab side that branches **and** tags arrived
+   (`git ls-remote <gitlab-url>` against the source's `git ls-remote`).
+
+6. **Watch mode** — push a commit in Azure DevOps and confirm the next cycle picks it up:
+   ```bash
+   holocron --source azure --destination gitlab --watch --interval 60 --window 10 --verbose
+   ```
+   (Webhook mode is GitHub-only; Azure DevOps syncs are poll-driven.)
 
 ### Webhook Mode (push-triggered sync)
 

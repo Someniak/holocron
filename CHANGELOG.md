@@ -3,6 +3,33 @@
 
 ## Unreleased
 
+### Features
+
+- Add **Azure DevOps Services (cloud) as a source provider** (`--source azure`),
+  so repositories in a `dev.azure.com` organisation can be mirrored to GitLab or
+  to local disk. Configure it with `AZURE_DEVOPS_TOKEN` (PAT, `Code (Read)`
+  scope) and `AZURE_DEVOPS_ORG_URL`, optionally narrowing to one project with
+  `--azure-project` / `AZURE_DEVOPS_PROJECT`. Azure DevOps is source-only:
+  Holocron does not push to it.
+
+  Provider specifics handled along the way: repository names are slugified to a
+  safe path component and qualified with the project name when the same name
+  exists in more than one project (Azure DevOps names are only unique per
+  project); the PAT is pinned to the configured organisation's host *and* path,
+  and any userinfo already present in the clone URL (`https://org@dev.azure.com/`)
+  is stripped before credentials are attached; sizes are converted from bytes to
+  KB; disabled and uninitialised repositories are skipped; a non-JSON response is
+  reported as a token problem, because Azure DevOps answers unauthenticated
+  requests with an HTML sign-in page instead of a `401`. The repository list
+  carries no timestamp, so `--window` filtering fetches each repository's most
+  recent push separately (in parallel), falling back to "recently pushed" if that
+  lookup fails so a repo is never silently dropped from watch mode.
+
+### Changed
+
+- `validate_config` now returns a `{provider: token}` mapping instead of a
+  `(gh_token, gl_token)` tuple, so new providers no longer widen the signature.
+
 ## v1.6.6 - 2026-07-17
 
 ### Infrastructure

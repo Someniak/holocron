@@ -7,12 +7,20 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 # Import from local modules
-from .config import parse_args, validate_config, GITLAB_API_URL, GITHUB_API_URL
+from .config import (
+    parse_args,
+    validate_config,
+    GITLAB_API_URL,
+    GITHUB_API_URL,
+    AZURE_DEVOPS_ORG_URL,
+    AZURE_DEVOPS_PROJECT,
+)
 from .logger import setup_logger, logger, log_execution
 from .mirror import needs_sync, sync_one_repo
 from .utils import handle_credits, print_storage_estimate
 from .providers.gitlab import GitLabProvider
 from .providers.github import GitHubProvider
+from .providers.azure import AzureDevOpsProvider
 from .webhook import start_webhook_server
 
 @log_execution
@@ -35,7 +43,7 @@ def run_sync_cycle(config: dict, source_provider, destination_provider, synced_p
         logger.error(f"Skipping sync cycle: failed to fetch repositories: {exc}")
         return 0
 
-    logger.debug(f"Found {len(repos)} repositories on GitHub.")
+    logger.debug(f"Found {len(repos)} repositories at the source.")
     
     print_storage_estimate(repos, checkout_mode=checkout)
 
@@ -138,13 +146,16 @@ def start_webhook_listener(config, source_provider, destination_provider, synced
 
 
 def get_provider(name, token, api_url_github, api_url_gitlab, namespace=None,
-                 provision_status_var=False):
+                 provision_status_var=False, azure_org_url=None, azure_project=None):
     """Factory to get the correct provider instance."""
     if name == "github":
         return GitHubProvider(token, api_url_github)
     elif name == "gitlab":
         return GitLabProvider(api_url_gitlab, token, namespace,
                               provision_status_var=provision_status_var)
+    elif name == "azure":
+        # Azure DevOps is source-only; it is not offered as a --destination.
+        return AzureDevOpsProvider(azure_org_url, token, project=azure_project)
     else:
         raise ValueError(f"Unknown provider: {name}")
 
@@ -159,21 +170,29 @@ def main():
     if args.destination == "local":
         args.backup_only = True
     
-    gh_token, gl_token = validate_config(args.source, args.destination, args.backup_only)
-    
+    # getattr keeps the hand-built argparse.Namespace objects the tests pass in
+    # working when new provider options are added.
+    azure_org_url = getattr(args, "azure_org_url", None) or AZURE_DEVOPS_ORG_URL
+    azure_project = getattr(args, "azure_project", None) or AZURE_DEVOPS_PROJECT
+
+    tokens = validate_config(args.source, args.destination, args.backup_only,
+                             azure_org_url=azure_org_url)
+
     # helper for tokens
     def get_token_for(p_name):
-        return gh_token if p_name == "github" else gl_token
-        
+        return tokens.get(p_name)
+
     # Initialize Providers
     logger.debug(f"Source: {args.source}, Destination: {args.destination}")
 
     source_provider = get_provider(
-        args.source, 
-        get_token_for(args.source), 
-        GITHUB_API_URL, 
+        args.source,
+        get_token_for(args.source),
+        GITHUB_API_URL,
         GITLAB_API_URL,
-        namespace=args.gitlab_namespace
+        namespace=args.gitlab_namespace,
+        azure_org_url=azure_org_url,
+        azure_project=azure_project,
     )
     
     # Only provision the GITHUB_REPO CI variable when mirroring GitHub -> GitLab:
@@ -202,6 +221,8 @@ def main():
             GITLAB_API_URL,
             namespace=args.gitlab_namespace,
             provision_status_var=provision_status_var,
+            azure_org_url=azure_org_url,
+            azure_project=azure_project,
         )
 
     logger.info("Initializing Holocron...")
