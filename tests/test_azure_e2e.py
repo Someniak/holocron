@@ -56,6 +56,15 @@ def azure_stub(source_repo):
     """Serves the Azure DevOps REST endpoints and the bare repo on a loopback port."""
     seen_auth = []
 
+    # The bare repo is complete (and `update-server-info` has run) before the
+    # server starts, so its contents can be read once into an in-memory map.
+    repo_files = {}
+    for directory, _, filenames in os.walk(source_repo):
+        for filename in filenames:
+            full = os.path.join(directory, filename)
+            key = os.path.relpath(full, source_repo).replace(os.sep, "/")
+            repo_files[key] = open(full, "rb").read()
+
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
             pass
@@ -89,9 +98,11 @@ def azure_stub(source_repo):
                 ]})
 
             if path.startswith(f"{GIT_PATH_PREFIX}/"):
-                target = os.path.join(str(source_repo), path[len(GIT_PATH_PREFIX) + 1:])
-                if os.path.isfile(target):
-                    body = open(target, "rb").read()
+                # Looked up in a map built from the repo before serving started,
+                # so the request path never reaches the filesystem: an unknown
+                # (or traversing) path simply misses and 404s.
+                body = repo_files.get(path[len(GIT_PATH_PREFIX) + 1:])
+                if body is not None:
                     self.send_response(200)
                     self.send_header("Content-Type", "application/octet-stream")
                     self.send_header("Content-Length", str(len(body)))
