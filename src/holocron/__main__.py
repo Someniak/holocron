@@ -18,13 +18,15 @@ from .config import (
 from .logger import setup_logger, logger, log_execution
 from .mirror import needs_sync, sync_one_repo
 from .utils import handle_credits, print_storage_estimate
+from .filters import build_repo_filter
 from .providers.gitlab import GitLabProvider
 from .providers.github import GitHubProvider
 from .providers.azure import AzureDevOpsProvider
 from .webhook import start_webhook_server
 
 @log_execution
-def run_sync_cycle(config: dict, source_provider, destination_provider, synced_pushes):
+def run_sync_cycle(config: dict, source_provider, destination_provider, synced_pushes,
+                   repo_filter=None):
     """Executes one full synchronization cycle."""
     # Unpack config
     concurrency = config['concurrency']
@@ -44,7 +46,13 @@ def run_sync_cycle(config: dict, source_provider, destination_provider, synced_p
         return 0
 
     logger.debug(f"Found {len(repos)} repositories at the source.")
-    
+
+    # Narrow to the selected repositories before anything is estimated, cloned
+    # or pushed. Applied centrally so every source is covered; a source may also
+    # apply it earlier to save per-repo API calls (see AzureDevOpsProvider).
+    if repo_filter:
+        repos = repo_filter.apply(repos)
+
     print_storage_estimate(repos, checkout_mode=checkout)
 
     sync_count = 0
@@ -91,7 +99,8 @@ def run_sync_cycle(config: dict, source_provider, destination_provider, synced_p
     return sync_count
 
 
-def start_webhook_listener(config, source_provider, destination_provider, synced_pushes):
+def start_webhook_listener(config, source_provider, destination_provider, synced_pushes,
+                           repo_filter=None):
     """
     Starts the webhook HTTP listener and returns the server.
 
@@ -109,6 +118,13 @@ def start_webhook_listener(config, source_provider, destination_provider, synced
     executor = ThreadPoolExecutor(max_workers=config['concurrency'], thread_name_prefix="webhook-sync")
 
     def on_push(repo):
+        # A filtered-out repo must stay filtered out however the sync is
+        # triggered; otherwise a webhook delivery would mirror a repository the
+        # poll loop deliberately skips.
+        if repo_filter and not repo_filter.matches(repo):
+            logger.debug(f"[{repo.name}] Ignoring webhook delivery: excluded by the repository filter.")
+            return
+
         future = executor.submit(
             sync_one_repo,
             repo=repo,
@@ -146,7 +162,8 @@ def start_webhook_listener(config, source_provider, destination_provider, synced
 
 
 def get_provider(name, token, api_url_github, api_url_gitlab, namespace=None,
-                 provision_status_var=False, azure_org_url=None, azure_project=None):
+                 provision_status_var=False, azure_org_url=None, azure_project=None,
+                 repo_filter=None):
     """Factory to get the correct provider instance."""
     if name == "github":
         return GitHubProvider(token, api_url_github)
@@ -155,7 +172,10 @@ def get_provider(name, token, api_url_github, api_url_gitlab, namespace=None,
                               provision_status_var=provision_status_var)
     elif name == "azure":
         # Azure DevOps is source-only; it is not offered as a --destination.
-        return AzureDevOpsProvider(azure_org_url, token, project=azure_project)
+        # The filter is handed to the source so it can drop repositories before
+        # spending an API call each on their last-push date.
+        return AzureDevOpsProvider(azure_org_url, token, project=azure_project,
+                                   repo_filter=repo_filter)
     else:
         raise ValueError(f"Unknown provider: {name}")
 
@@ -178,6 +198,16 @@ def main():
     tokens = validate_config(args.source, args.destination, args.backup_only,
                              azure_org_url=azure_org_url)
 
+    # Repository selection (--include/--exclude/--repo-list). Built before the
+    # providers so a mistyped pattern file fails at startup, and so a source can
+    # be handed the filter and skip per-repo API calls it will never need.
+    repo_filter = build_repo_filter(args)
+    if repo_filter:
+        logger.info(
+            f"Repository filter active: {len(repo_filter.include) or 'no'} include "
+            f"pattern(s), {len(repo_filter.exclude) or 'no'} exclude pattern(s)."
+        )
+
     # helper for tokens
     def get_token_for(p_name):
         return tokens.get(p_name)
@@ -193,6 +223,7 @@ def main():
         namespace=args.gitlab_namespace,
         azure_org_url=azure_org_url,
         azure_project=azure_project,
+        repo_filter=repo_filter,
     )
     
     # Only provision the GITHUB_REPO CI variable when mirroring GitHub -> GitLab:
@@ -238,10 +269,12 @@ def main():
     # Start the webhook listener (if enabled) before the poll loop so push events
     # are handled even while an initial full cycle is running.
     if getattr(args, "webhook", False):
-        start_webhook_listener(config, source_provider, destination_provider, synced_pushes)
+        start_webhook_listener(config, source_provider, destination_provider, synced_pushes,
+                               repo_filter=repo_filter)
 
     while True:
-        sync_count = run_sync_cycle(config, source_provider, destination_provider, synced_pushes)
+        sync_count = run_sync_cycle(config, source_provider, destination_provider, synced_pushes,
+                                    repo_filter=repo_filter)
 
         if sync_count > 0:
             logger.info(f"Sync cycle complete. Updated {sync_count} repositories.")

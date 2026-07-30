@@ -72,3 +72,26 @@ def test_validate_config_local_destination_needs_no_token():
         tokens = validate_config("azure", "local", backup_only=True,
                                  azure_org_url="https://dev.azure.com/acme")
     assert tokens["azure"] == "az"
+
+
+def test_parse_args_repository_selection_flags():
+    test_args = [
+        'g2g.py',
+        '--include', 'api,web',
+        '--include', 'docs',
+        '--exclude', '*-archive',
+        '--repo-list', '/tmp/repos.txt',
+    ]
+    with patch.object(sys, 'argv', test_args):
+        args = parse_args()
+        assert args.include == ['api,web', 'docs']
+        assert args.exclude == ['*-archive']
+        assert args.repo_list == '/tmp/repos.txt'
+
+
+def test_parse_args_repository_selection_defaults_empty():
+    with patch.object(sys, 'argv', ['g2g.py']):
+        args = parse_args()
+        assert not args.include
+        assert not args.exclude
+        assert args.repo_list is None

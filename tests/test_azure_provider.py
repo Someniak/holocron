@@ -296,3 +296,70 @@ def test_get_remote_url_supports_legacy_visualstudio_host():
     p = AzureDevOpsProvider(org_url="https://acme.visualstudio.com", token="PAT")
     repo = Repository(name="api", clone_url="https://acme.visualstudio.com/Proj/_git/api")
     assert p.get_remote_url(repo) == "https://oauth2:PAT@acme.visualstudio.com/Proj/_git/api"
+
+
+# --- repository filtering ----------------------------------------------------
+
+@patch("requests.get")
+def test_filter_skips_last_push_lookups(mock_get):
+    """
+    The whole point of filtering in the provider: no per-repo API call is spent
+    on a repository that will be dropped anyway.
+    """
+    from holocron.filters import RepoFilter
+
+    mock_get.side_effect = [
+        json_response({"value": [
+            repo_item("api", repo_id="1"),
+            repo_item("docs", repo_id="2"),
+            repo_item("web", repo_id="3"),
+        ]}),
+        json_response({"value": [{"date": "2024-05-04T10:11:12Z"}]}),
+    ]
+
+    repos = provider(repo_filter=RepoFilter(include=["api"])).fetch_repos()
+
+    assert [r.name for r in repos] == ["api"]
+    # One list call + exactly one pushes call, not three.
+    assert mock_get.call_count == 2
+    assert mock_get.call_args_list[1][0][0].endswith("/repositories/1/pushes")
+
+
+@patch("requests.get")
+def test_filter_does_not_change_mirror_names(mock_get):
+    """
+    Names are resolved over the full list before filtering: narrowing the filter
+    must not rename a mirror (which would orphan its existing directory).
+    """
+    from holocron.filters import RepoFilter
+
+    items = [
+        repo_item("docs", project="Alpha", repo_id="1"),
+        repo_item("docs", project="Beta", repo_id="2"),
+    ]
+    mock_get.side_effect = [
+        json_response({"value": items}),
+        json_response({"value": []}),
+    ]
+
+    repos = provider(repo_filter=RepoFilter(include=["Alpha/*"])).fetch_repos()
+
+    # Still project-qualified, even though the Beta one was filtered out.
+    assert [r.name for r in repos] == ["Alpha-docs"]
+
+
+@patch("requests.get")
+def test_filter_can_select_a_whole_project_by_full_name(mock_get):
+    from holocron.filters import RepoFilter
+
+    mock_get.side_effect = [
+        json_response({"value": [
+            repo_item("api", project="Alpha", repo_id="1"),
+            repo_item("web", project="Beta", repo_id="2"),
+        ]}),
+        json_response({"value": []}),
+    ]
+
+    repos = provider(repo_filter=RepoFilter(include=["beta/*"])).fetch_repos()
+
+    assert [r.name for r in repos] == ["web"]

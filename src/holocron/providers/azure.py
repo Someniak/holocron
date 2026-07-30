@@ -80,12 +80,17 @@ class AzureDevOpsProvider(Provider):
     """
 
     def __init__(self, org_url, token, project=None, api_version=API_VERSION,
-                 activity_concurrency=8):
+                 activity_concurrency=8, repo_filter=None):
         self.org_url = (org_url or "").rstrip("/")
         self.token = token
         # Optional single-project scope. Without it every repository in the
         # organisation is mirrored.
         self.project = project
+        # Optional RepoFilter. Applied here as well as centrally, because the
+        # last-push lookup costs one request per repository -- in a 1000-repo
+        # organisation, filtering first is the difference between 1001 requests
+        # and a handful.
+        self.repo_filter = repo_filter
         self.api_version = api_version
         # Azure DevOps has no bulk "last activity" endpoint, so the last push
         # date costs one request per repository; they are issued in parallel.
@@ -206,11 +211,24 @@ class AzureDevOpsProvider(Provider):
 
             usable.append(item)
 
-        repos = [
-            self._to_repository(item, name)
+        # Names are resolved over the *whole* list before filtering, so a
+        # repository's mirror name never changes just because the filter did
+        # (which would orphan its existing mirror directory).
+        paired = [
+            (self._to_repository(item, name), item)
             for item, name in zip(usable, self._resolve_names(usable))
         ]
-        self._attach_last_activity(repos, usable)
+
+        if self.repo_filter:
+            paired = [pair for pair in paired
+                      if self.repo_filter.matches(pair[0])]
+            logger.debug(
+                f"{len(paired)} of {len(usable)} Azure DevOps repositories selected; "
+                f"skipping last-push lookups for the rest."
+            )
+
+        repos = [repo for repo, _ in paired]
+        self._attach_last_activity(repos, [item for _, item in paired])
         return repos
 
     def _resolve_names(self, items):

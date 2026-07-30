@@ -25,6 +25,23 @@
   recent push separately (in parallel), falling back to "recently pushed" if that
   lookup fails so a repo is never silently dropped from watch mode.
 
+- Add **repository selection** for every source: `--include` / `--exclude` glob
+  patterns (repeatable and comma-separated) and `--repo-list FILE`, an explicit
+  fetch list of one pattern per line. Patterns are matched case-insensitively
+  against both the mirror name and the fully-qualified source path, so `acme/*`
+  selects a GitHub org and `MyProject/*` an Azure DevOps project. Without any
+  include patterns everything is mirrored, as before; excludes are applied after
+  includes and always win.
+
+  The filter is applied centrally so every source is covered, and again on
+  webhook deliveries so a push to an excluded repository cannot bypass the
+  selection. The Azure DevOps source additionally applies it before its
+  per-repository last-push lookups, which is what makes a large organisation
+  cheap to mirror partially: mirror names are still resolved over the full
+  repository list first, so narrowing the filter never renames an existing
+  mirror. A missing `--repo-list` file is a startup error rather than a silent
+  fall-through to mirroring everything.
+
 ### Changed
 
 - `validate_config` now returns a `{provider: token}` mapping instead of a

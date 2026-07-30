@@ -23,6 +23,12 @@ GITLAB_NAMESPACE = os.environ.get("GITLAB_NAMESPACE")
 AZURE_DEVOPS_ORG_URL = os.environ.get("AZURE_DEVOPS_ORG_URL")
 AZURE_DEVOPS_PROJECT = os.environ.get("AZURE_DEVOPS_PROJECT")
 
+# Repository selection. Comma-separated glob patterns; HOLOCRON_REPO_LIST points
+# at a file holding one include pattern per line.
+HOLOCRON_INCLUDE = os.environ.get("HOLOCRON_INCLUDE")
+HOLOCRON_EXCLUDE = os.environ.get("HOLOCRON_EXCLUDE")
+HOLOCRON_REPO_LIST = os.environ.get("HOLOCRON_REPO_LIST")
+
 # Environment variable holding each provider's access token.
 TOKEN_ENV_VARS = {
     "github": "GITHUB_TOKEN",
@@ -62,6 +68,17 @@ def parse_args():
     parser.add_argument("--backup-only", action="store_true", default=get_bool_env("HOLOCRON_BACKUP_ONLY"), help="Mirror locally only, skip pushing to destination")
     parser.add_argument("--checkout", action="store_true", default=get_bool_env("HOLOCRON_CHECKOUT"), help="Create a checkout of the repository alongside the mirror")
     parser.add_argument("--gitlab-namespace", type=str, default=GITLAB_NAMESPACE, help="GitLab namespace (User or Group) to push to")
+    # Repository selection. Repeatable and comma-separated, e.g.
+    #   --include 'acme/*' --include api,web --exclude '*-archive'
+    parser.add_argument("--include", type=str, action="append",
+                        default=[HOLOCRON_INCLUDE] if HOLOCRON_INCLUDE else None,
+                        help="Only mirror repositories matching these glob patterns (repeatable, comma-separated). Matched against the repo name and its 'owner/repo' path")
+    parser.add_argument("--exclude", type=str, action="append",
+                        default=[HOLOCRON_EXCLUDE] if HOLOCRON_EXCLUDE else None,
+                        help="Skip repositories matching these glob patterns (repeatable, comma-separated). Applied after --include and always wins")
+    parser.add_argument("--repo-list", type=str, default=HOLOCRON_REPO_LIST,
+                        help="File holding one include pattern per line ('#' comments allowed) -- an explicit fetch list for large organisations")
+
     parser.add_argument("--azure-org-url", type=str, default=AZURE_DEVOPS_ORG_URL, help="Azure DevOps organisation URL, e.g. https://dev.azure.com/my-org (required for --source azure)")
     parser.add_argument("--azure-project", type=str, default=AZURE_DEVOPS_PROJECT, help="Limit the Azure DevOps source to a single project (default: every project in the organisation)")
     parser.add_argument("--github-status", action="store_true", default=get_bool_env("HOLOCRON_GITHUB_STATUS"), help="Provision a per-project GITHUB_REPO CI/CD variable on GitLab so runners can report CI checks back to the GitHub commit (requires GitHub source, GitLab destination)")

@@ -25,6 +25,9 @@ You can configure Holocron entirely using Environment Variables. This is ideal f
 | `AZURE_DEVOPS_TOKEN` | Azure DevOps PAT with the `Code (Read)` scope. Only needed with `HOLOCRON_SOURCE=azure`. |
 | `AZURE_DEVOPS_ORG_URL` | Azure DevOps organisation URL, e.g. `https://dev.azure.com/my-org`. Required with `HOLOCRON_SOURCE=azure`. |
 | `AZURE_DEVOPS_PROJECT` | Optional: limit the Azure DevOps source to a single project. |
+| `HOLOCRON_INCLUDE` | Optional: comma-separated glob patterns; only matching repositories are mirrored. |
+| `HOLOCRON_EXCLUDE` | Optional: comma-separated glob patterns to skip (applied after includes). |
+| `HOLOCRON_REPO_LIST` | Optional: path to a mounted file holding one include pattern per line. |
 
 ### Core Settings
 

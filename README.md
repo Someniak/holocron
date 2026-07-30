@@ -96,6 +96,9 @@ Holocron uses environment variables for secrets:
  | `AZURE_DEVOPS_TOKEN` | Azure DevOps Personal Access Token | **Yes** (if `--source azure`) |
  | `AZURE_DEVOPS_ORG_URL` | Azure DevOps organisation URL, e.g. `https://dev.azure.com/my-org` | **Yes** (if `--source azure`) |
  | `AZURE_DEVOPS_PROJECT` | Limit the Azure DevOps source to one project (default: every project in the org) | No |
+ | `HOLOCRON_INCLUDE` | Comma-separated glob patterns; only matching repositories are mirrored | No |
+ | `HOLOCRON_EXCLUDE` | Comma-separated glob patterns to skip (applied after includes) | No |
+ | `HOLOCRON_REPO_LIST` | Path to a file holding one include pattern per line | No |
  | `HOLOCRON_WEBHOOK_SECRET` | Shared secret used to verify GitHub webhook signatures | **Yes** (if `--webhook`) |
  | `HOLOCRON_WEBHOOK_CERT` / `HOLOCRON_WEBHOOK_KEY` | TLS cert/key for the webhook listener (auto-generated in Docker) | No |
  
@@ -167,6 +170,53 @@ Holocron uses environment variables for secrets:
 | `--destination` | `gitlab` | Destination provider: `github`, `gitlab` or `local` |
 | `--azure-org-url` | _(none)_ | Azure DevOps organisation URL (required for `--source azure`) |
 | `--azure-project` | _(none)_ | Limit the Azure DevOps source to a single project |
+| `--include` | _(none)_ | Only mirror repositories matching these glob patterns (repeatable, comma-separated) |
+| `--exclude` | _(none)_ | Skip repositories matching these glob patterns (applied after `--include`) |
+| `--repo-list` | _(none)_ | File holding one include pattern per line — an explicit fetch list |
+
+### Selecting which repositories to mirror
+
+By default Holocron mirrors **everything** the source token can see. In an organisation
+with hundreds or thousands of repositories that is rarely what you want, so the set can be
+narrowed with glob patterns — this works for every source (GitHub, GitLab, Azure DevOps).
+
+```bash
+# An explicit fetch list -- one pattern per line, '#' comments allowed
+cat > repos.txt <<'EOF'
+# platform team
+api
+web-frontend
+acme/shared-*      # a whole prefix
+EOF
+holocron --repo-list repos.txt
+
+# Or inline; both flags are repeatable and accept comma-separated values
+holocron --include 'api,web-*' --exclude '*-archive,*-sandbox'
+```
+
+**Semantics**
+
+- Patterns are shell globs (`*`, `?`, `[seq]`), matched **case-insensitively**.
+- Each pattern is matched against the repository's **mirror name** (`widgets`) *and* its
+  fully-qualified source path when it has one — `acme/widgets` on GitHub,
+  `MyProject/Widgets Repo` on Azure DevOps. So `acme/*` selects a whole GitHub org, and
+  `MyProject/*` selects a whole Azure DevOps project.
+- With **no** include patterns, everything is included. `--exclude` is applied after
+  `--include` and always wins.
+- `--repo-list` simply contributes more include patterns, so it composes with `--include`.
+  A missing or unreadable list file is a **startup error** — quietly mirroring all 1,000
+  repositories because a path was mistyped would be much worse.
+- A filter that matches nothing logs a warning rather than silently mirroring an empty set.
+- The filter applies to **webhook deliveries** too, so a push to an excluded repository is
+  ignored rather than sneaking past the poll loop's selection.
+
+Run with `--dry-run --verbose` first to see exactly which repositories the patterns select.
+
+> **Azure DevOps note**: the filter is applied inside the source, before the per-repository
+> last-push lookups, so filtering also cuts the API calls per cycle — in a 1,000-repo
+> organisation that is the difference between ~1,001 requests and a handful. Mirror names
+> are resolved over the full repository list *before* filtering, so narrowing the filter
+> never renames an existing mirror.
 
 ### Azure DevOps as a source
 

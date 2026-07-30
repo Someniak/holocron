@@ -342,3 +342,64 @@ def test_main_azure_source_to_gitlab(mock_sync, mock_get, mock_parse):
     assert kwargs["destination_provider"].get_remote_url(repo) == (
         "http://oauth2:gl_token@gitlab.local/mirrors/widgets.git"
     )
+
+
+# --- repository filtering ----------------------------------------------------
+
+@patch("holocron.__main__.sync_one_repo")
+def test_run_sync_cycle_applies_filter(mock_sync):
+    from holocron.filters import RepoFilter
+
+    source = MagicMock()
+    source.fetch_repos.return_value = [
+        Repository(name="api", clone_url="u1"),
+        Repository(name="docs", clone_url="u2"),
+        Repository(name="api-archive", clone_url="u3"),
+    ]
+    config = dict(concurrency=1, storage="/tmp/data", watch=False, window=10,
+                  backup_only=True, dry_run=False, checkout=False)
+
+    synced = run_sync_cycle(config, source, None, {},
+                            repo_filter=RepoFilter(include=["api*"], exclude=["*-archive"]))
+
+    assert synced == 1
+    assert [c[1]["repo"].name for c in mock_sync.call_args_list] == ["api"]
+
+
+@patch("holocron.__main__.sync_one_repo")
+def test_run_sync_cycle_without_filter_syncs_everything(mock_sync):
+    source = MagicMock()
+    source.fetch_repos.return_value = [
+        Repository(name="api", clone_url="u1"),
+        Repository(name="docs", clone_url="u2"),
+    ]
+    config = dict(concurrency=1, storage="/tmp/data", watch=False, window=10,
+                  backup_only=True, dry_run=False, checkout=False)
+
+    assert run_sync_cycle(config, source, None, {}) == 2
+
+
+@patch.dict(os.environ, {"HOLOCRON_WEBHOOK_SECRET": "s"}, clear=True)
+@patch("holocron.__main__.start_webhook_server")
+@patch("holocron.__main__.sync_one_repo")
+def test_webhook_deliveries_respect_the_filter(mock_sync, mock_start):
+    """
+    A filtered-out repo must stay filtered out however the sync is triggered --
+    otherwise a webhook delivery mirrors what the poll loop deliberately skips.
+    """
+    from holocron.__main__ import start_webhook_listener
+    from holocron.filters import RepoFilter
+
+    config = dict(concurrency=1, storage="/tmp/data", dry_run=False,
+                  backup_only=True, checkout=False, webhook_port=8080,
+                  webhook_path="/webhook")
+
+    start_webhook_listener(config, MagicMock(), None, {},
+                           repo_filter=RepoFilter(include=["api"]))
+    on_push = mock_start.call_args[1]["on_push"]
+
+    on_push(Repository(name="docs", clone_url="u"))
+    mock_sync.assert_not_called()
+
+    on_push(Repository(name="api", clone_url="u"))
+    assert mock_sync.call_count == 1
