@@ -79,7 +79,8 @@ def sync_one_repo(repo, storage_path, dry_run=False, backup_only=False, checkout
 
             if not backup_only:
                  destination_provider.prepare_push(repo)
-                 _push_to_destination(repo, repo_dir, destination_url)
+                 _push_to_destination(repo, repo_dir, destination_url,
+                                      refspecs=destination_provider.push_refspecs())
             else:
                 logger.info(f"[{repo.name}] Successfully backed up locally.")
 
@@ -107,14 +108,31 @@ def _ensure_local_mirror(repo, repo_dir, source_url):
             err_msg = e.stderr.decode().strip() if e.stderr else str(e)
             raise subprocess.CalledProcessError(e.returncode, e.cmd, output=e.output, stderr=err_msg)
 
-def _push_to_destination(repo, repo_dir, destination_url):
-    """Pushes the local mirror to the destination (GitLab)."""
+def _push_to_destination(repo, repo_dir, destination_url, refspecs=None):
+    """
+    Pushes the local mirror to the configured destination.
+
+    Without refspecs this is `git push --mirror`: push everything, delete
+    anything on the remote that is not local. A destination that owns refs of
+    its own supplies refspecs instead, and only those namespaces are pushed and
+    pruned (see Provider.push_refspecs).
+    """
     # Ensure push remote is set (optional but good practice)
     subprocess.run(["git", "-C", repo_dir, "remote", "set-url", "--push", "origin", destination_url], check=True, stderr=subprocess.DEVNULL)
 
+    if refspecs:
+        # The local clone is a --mirror clone, so remote.origin.mirror is set and
+        # git refuses explicit refspecs ("--mirror can't be combined with
+        # refspecs"). Turn it off for this invocation only; pushing by remote
+        # name (rather than URL) keeps the token out of the command line.
+        push_cmd = ["git", "-C", repo_dir, "-c", "remote.origin.mirror=false",
+                    "push", "--prune", "--quiet", "origin", *refspecs]
+    else:
+        push_cmd = ["git", "-C", repo_dir, "push", "--mirror", "--quiet"]
+
     try:
-        subprocess.run(["git", "-C", repo_dir, "push", "--mirror", "--quiet"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-        logger.info(f"[{repo.name}] Successfully synced to GitLab.")
+        subprocess.run(push_cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        logger.info(f"[{repo.name}] Successfully synced to the destination.")
     except subprocess.CalledProcessError as e:
         err_msg = e.stderr.decode().strip() if e.stderr else str(e)
         raise subprocess.CalledProcessError(e.returncode, e.cmd, output=e.output, stderr=err_msg)

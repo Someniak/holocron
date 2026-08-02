@@ -67,6 +67,75 @@ def test_validate_config_azure_source_requires_org_url():
     assert excinfo.value.code == 1
 
 
+def test_parse_args_destination_choices_include_azure():
+    test_args = [
+        'g2g.py',
+        '--destination', 'azure',
+        '--azure-org-url', 'https://dev.azure.com/acme',
+        '--azure-project', 'Mirrors',
+    ]
+    with patch.object(sys, 'argv', test_args):
+        args = parse_args()
+        assert args.destination == "azure"
+        assert args.azure_project == "Mirrors"
+
+
+def test_validate_config_azure_destination_accepts_a_full_config():
+    env = {"GITHUB_TOKEN": "gh", "AZURE_DEVOPS_TOKEN": "az"}
+    with patch.dict(os.environ, env, clear=True):
+        tokens = validate_config("github", "azure",
+                                 azure_org_url="https://dev.azure.com/acme",
+                                 azure_project="Mirrors")
+    assert tokens["azure"] == "az"
+
+
+def test_validate_config_azure_destination_requires_token():
+    with patch.dict(os.environ, {"GITHUB_TOKEN": "gh"}, clear=True):
+        with pytest.raises(SystemExit) as excinfo:
+            validate_config("github", "azure",
+                            azure_org_url="https://dev.azure.com/acme",
+                            azure_project="Mirrors")
+    assert excinfo.value.code == 1
+
+
+def test_validate_config_azure_destination_requires_org_url():
+    env = {"GITHUB_TOKEN": "gh", "AZURE_DEVOPS_TOKEN": "az"}
+    with patch.dict(os.environ, env, clear=True):
+        with pytest.raises(SystemExit) as excinfo:
+            validate_config("github", "azure", azure_org_url=None,
+                            azure_project="Mirrors")
+    assert excinfo.value.code == 1
+
+
+def test_validate_config_azure_destination_requires_a_project():
+    """Azure DevOps repositories are created inside a project -- there is no root."""
+    env = {"GITHUB_TOKEN": "gh", "AZURE_DEVOPS_TOKEN": "az"}
+    with patch.dict(os.environ, env, clear=True):
+        with pytest.raises(SystemExit) as excinfo:
+            validate_config("github", "azure",
+                            azure_org_url="https://dev.azure.com/acme",
+                            azure_project=None)
+    assert excinfo.value.code == 1
+
+
+def test_validate_config_rejects_azure_to_azure():
+    """One org URL is shared, so this would mirror an organisation onto itself."""
+    with patch.dict(os.environ, {"AZURE_DEVOPS_TOKEN": "az"}, clear=True):
+        with pytest.raises(SystemExit) as excinfo:
+            validate_config("azure", "azure",
+                            azure_org_url="https://dev.azure.com/acme",
+                            azure_project="Mirrors")
+    assert excinfo.value.code == 1
+
+
+def test_validate_config_allows_azure_source_with_local_backup():
+    """--destination local sets backup_only, so nothing is pushed back."""
+    with patch.dict(os.environ, {"AZURE_DEVOPS_TOKEN": "az"}, clear=True):
+        tokens = validate_config("azure", "azure", backup_only=True,
+                                 azure_org_url="https://dev.azure.com/acme")
+    assert tokens["azure"] == "az"
+
+
 def test_validate_config_local_destination_needs_no_token():
     with patch.dict(os.environ, {"AZURE_DEVOPS_TOKEN": "az"}, clear=True):
         tokens = validate_config("azure", "local", backup_only=True,

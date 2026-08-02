@@ -22,9 +22,9 @@ You can configure Holocron entirely using Environment Variables. This is ideal f
 |----------|-------------|
 | `GITHUB_TOKEN` | GitHub Personal Access Token (PAT) with `repo` scope. |
 | `GITLAB_TOKEN` | GitLab Personal Access Token (PAT) with `read_api` and `write_repository` scopes. |
-| `AZURE_DEVOPS_TOKEN` | Azure DevOps PAT with the `Code (Read)` scope. Only needed with `HOLOCRON_SOURCE=azure`. |
-| `AZURE_DEVOPS_ORG_URL` | Azure DevOps organisation URL, e.g. `https://dev.azure.com/my-org`. Required with `HOLOCRON_SOURCE=azure`. |
-| `AZURE_DEVOPS_PROJECT` | Optional: limit the Azure DevOps source to a single project. |
+| `AZURE_DEVOPS_TOKEN` | Azure DevOps PAT. `Code (Read)` as a source; `Code (Read, write, & manage)` as a destination. Needed when `azure` is the source or the destination. |
+| `AZURE_DEVOPS_ORG_URL` | Azure DevOps organisation URL, e.g. `https://dev.azure.com/my-org`. Required when `azure` is the source or the destination. |
+| `AZURE_DEVOPS_PROJECT` | Azure DevOps project. As a source: limit the mirror to one project. As a destination: **required** — the project repositories are created in. |
 | `HOLOCRON_INCLUDE` | Optional: comma-separated glob patterns; only matching repositories are mirrored. |
 | `HOLOCRON_EXCLUDE` | Optional: comma-separated glob patterns to skip (applied after includes). |
 | `HOLOCRON_REPO_LIST` | Optional: path to a mounted file holding one include pattern per line. |
@@ -33,8 +33,8 @@ You can configure Holocron entirely using Environment Variables. This is ideal f
 
 | Variable | CLI Argument | Default | Description |
 |----------|--------------|---------|-------------|
-| `HOLOCRON_SOURCE` | `--source` | `github` | Source provider (`github` or `gitlab`). |
-| `HOLOCRON_DESTINATION` | `--destination` | `gitlab` | Destination provider (`github`, `gitlab`, or `local`). |
+| `HOLOCRON_SOURCE` | `--source` | `github` | Source provider (`github`, `gitlab`, or `azure`). |
+| `HOLOCRON_DESTINATION` | `--destination` | `gitlab` | Destination provider (`github`, `gitlab`, `azure`, or `local`). |
 | `HOLOCRON_DRY_RUN` | `--dry-run` | `false` | Simulate execution without mirroring. |
 | `HOLOCRON_BACKUP_ONLY` | `--backup-only` | `false` | Mirror locally only, skip pushing to destination. |
 

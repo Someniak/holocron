@@ -1,5 +1,6 @@
 import base64
 import re
+import threading
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -65,12 +66,9 @@ def _utcnow():
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
-class AzureDevOpsProvider(Provider):
+class _AzureDevOpsApi:
     """
-    Azure DevOps Services (cloud) provider.
-
-    Source-only for now: Holocron can mirror *from* Azure DevOps, but does not
-    create or push to Azure DevOps repositories.
+    Shared Azure DevOps REST plumbing: auth, JSON handling and pagination.
 
     `org_url` is the full organisation URL -- `https://dev.azure.com/<org>` for
     the current cloud form, `https://<org>.visualstudio.com` for the legacy one.
@@ -79,22 +77,13 @@ class AzureDevOpsProvider(Provider):
     and `git` over HTTPS.
     """
 
-    def __init__(self, org_url, token, project=None, api_version=API_VERSION,
-                 activity_concurrency=8, repo_filter=None):
+    def __init__(self, org_url, token, project=None, api_version=API_VERSION):
         self.org_url = (org_url or "").rstrip("/")
         self.token = token
-        # Optional single-project scope. Without it every repository in the
-        # organisation is mirrored.
+        # Optional single-project scope. For a source this narrows what is
+        # mirrored; for a destination it is where repositories are created.
         self.project = project
-        # Optional RepoFilter. Applied here as well as centrally, because the
-        # last-push lookup costs one request per repository -- in a 1000-repo
-        # organisation, filtering first is the difference between 1001 requests
-        # and a handful.
-        self.repo_filter = repo_filter
         self.api_version = api_version
-        # Azure DevOps has no bulk "last activity" endpoint, so the last push
-        # date costs one request per repository; they are issued in parallel.
-        self.activity_concurrency = activity_concurrency
 
     # --- HTTP plumbing -----------------------------------------------------
 
@@ -179,7 +168,27 @@ class AzureDevOpsProvider(Provider):
 
         return items
 
-    # --- Source interface --------------------------------------------------
+
+class AzureDevOpsProvider(_AzureDevOpsApi, Provider):
+    """
+    Azure DevOps Services (cloud) as a mirror *source*.
+
+    Mirrors *from* Azure DevOps: it lists repositories and builds authenticated
+    clone URLs, but never creates or pushes anything. See
+    AzureDevOpsDestinationProvider for the other direction.
+    """
+
+    def __init__(self, org_url, token, project=None, api_version=API_VERSION,
+                 activity_concurrency=8, repo_filter=None):
+        super().__init__(org_url, token, project=project, api_version=api_version)
+        # Optional RepoFilter. Applied here as well as centrally, because the
+        # last-push lookup costs one request per repository -- in a 1000-repo
+        # organisation, filtering first is the difference between 1001 requests
+        # and a handful.
+        self.repo_filter = repo_filter
+        # Azure DevOps has no bulk "last activity" endpoint, so the last push
+        # date costs one request per repository; they are issued in parallel.
+        self.activity_concurrency = activity_concurrency
 
     @log_execution
     def fetch_repos(self) -> list[Repository]:
@@ -408,3 +417,232 @@ class AzureDevOpsProvider(Provider):
             netloc = f"oauth2:{quote(self.token, safe='')}@{host}"
 
         return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+
+
+class AzureDevOpsDestinationProvider(_AzureDevOpsApi, Provider):
+    """
+    Azure DevOps Services (cloud) as a mirror *destination*.
+
+    Two things make this more than a URL builder:
+
+    * Azure DevOps does not create a repository on first push the way GitLab
+      does -- pushing to a path that does not exist fails. `prepare_push`
+      therefore creates missing repositories through the REST API, which is why
+      a `project` is required: repositories live inside one, and Holocron does
+      not create projects.
+    * The push URL is built from the *configured* organisation and project, not
+      from `repo.clone_url` -- that URL belongs to the source.
+
+    The PAT needs the `Code (Read, write, & manage)` scope; `Code (Read & write)`
+    is enough only when every destination repository already exists.
+    """
+
+    def __init__(self, org_url, token, project=None, api_version=API_VERSION):
+        if not (org_url or "").strip():
+            raise ValueError("an Azure DevOps destination needs an organisation URL")
+        if not (project or "").strip():
+            raise ValueError(
+                "an Azure DevOps destination needs a project (--azure-project / "
+                "AZURE_DEVOPS_PROJECT): repositories are created inside a project"
+            )
+        super().__init__(org_url, token, project=project, api_version=api_version)
+
+        # prepare_push runs for every repository on every cycle. Remember which
+        # ones are known to exist so a steady-state watch loop costs no API
+        # calls at all. Guarded: syncs run on a thread pool.
+        self._existing = set()
+        self._existing_guard = threading.Lock()
+        self._project_id = None
+
+    @log_execution
+    def fetch_repos(self) -> list[Repository]:
+        """
+        Lists the repositories that already exist in the destination project.
+
+        The sync engine only ever fetches from the source, so this is here to
+        satisfy the Provider interface and to make the destination inspectable.
+        Names are the raw Azure DevOps ones, not mirror names.
+        """
+        scope = f"Azure DevOps repositories in project '{self.project}'"
+        repos = []
+        for item in self._get_all_items(f"{self._api_base()}/git/repositories", scope):
+            name = item.get("name")
+            if not name:
+                continue
+            try:
+                size_kb = int(item.get("size") or 0) // 1024
+            except (TypeError, ValueError):
+                size_kb = 0
+            repos.append(Repository(
+                name=name,
+                clone_url=item.get("remoteUrl") or item.get("webUrl"),
+                size=size_kb,
+                full_name=f"{self.project}/{name}",
+            ))
+        return repos
+
+    def get_remote_url(self, repo: Repository) -> str:
+        """
+        Constructs the authenticated push URL: `{org}/{project}/_git/{name}`.
+
+        `repo.name` is the mirror name, already restricted to the safe slug
+        charset by the sync engine before it gets here.
+        """
+        name = (repo.name or "").strip()
+        if not name:
+            raise ValueError("cannot push a repository with no name")
+
+        parts = urlsplit(self.org_url)
+        if parts.scheme not in ("http", "https") or not parts.hostname:
+            raise ValueError(
+                f"unsupported Azure DevOps organisation URL {self.org_url!r}"
+            )
+
+        host = parts.hostname
+        if parts.port:
+            host = f"{host}:{parts.port}"
+
+        netloc = host
+        if self.token:
+            # Azure DevOps ignores the username and takes the PAT as password.
+            netloc = f"oauth2:{quote(self.token, safe='')}@{host}"
+
+        path = (
+            f"{parts.path.rstrip('/')}"
+            f"/{quote(self.project, safe='')}/_git/{quote(name, safe='')}"
+        )
+        return urlunsplit((parts.scheme, netloc, path, "", ""))
+
+    def push_refspecs(self):
+        """
+        Pushes branches and tags only, pruning within those namespaces.
+
+        `git push --mirror` is wrong for Azure DevOps in both directions: it
+        would try to *write* refs the server reserves (a GitHub mirror carries
+        `refs/pull/*`, which Azure DevOps rejects) and to *delete* the
+        server-managed refs Azure keeps for its own pull requests, since they
+        have no local counterpart. Restricting the push to `refs/heads/*` and
+        `refs/tags/*` mirrors everything that is actually the source's, and
+        leaves Azure's own refs alone.
+        """
+        return ["+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*"]
+
+    def prepare_push(self, repo: Repository):
+        """Creates the destination repository if it does not exist yet."""
+        name = repo.name
+        with self._existing_guard:
+            if name in self._existing:
+                return
+
+        self._ensure_repository(name)
+
+        with self._existing_guard:
+            self._existing.add(name)
+
+    # --- repository provisioning -------------------------------------------
+
+    def _ensure_repository(self, name):
+        """
+        Checks whether `name` exists in the project, creating it if it does not.
+
+        Unlike the GitLab destination's best-effort branch-protection tweak, a
+        failure here is fatal for this repository: without the repository the
+        push cannot succeed, and an opaque `git push` error is a much worse way
+        to find that out. The exception is reported per repository and the next
+        cycle retries.
+        """
+        url = f"{self._api_base()}/git/repositories/{quote(name, safe='')}"
+        try:
+            self._get_json(url, None, f"Azure DevOps repository '{name}'")
+            logger.debug(f"[{name}] Destination repository already exists.")
+            return
+        except requests.exceptions.HTTPError as e:
+            status = e.response.status_code if e.response is not None else None
+            if status != 404:
+                raise RuntimeError(
+                    f"[{name}] Could not look up the destination repository in project "
+                    f"'{self.project}': HTTP {status}{_scope_hint(status)}"
+                ) from e
+        except requests.exceptions.RequestException as e:
+            raise RuntimeError(
+                f"[{name}] Could not reach Azure DevOps to look up the destination "
+                f"repository: {e}"
+            ) from e
+
+        logger.info(f"[{name}] Creating Azure DevOps repository in project '{self.project}'...")
+        self._create_repository(name)
+
+    def _create_repository(self, name):
+        """POSTs a new (empty) Git repository into the configured project."""
+        payload = {"name": name, "project": {"id": self._resolve_project_id()}}
+        headers = dict(self._headers())
+        headers["Content-Type"] = "application/json"
+
+        try:
+            r = requests.post(
+                f"{self._api_base()}/git/repositories",
+                headers=headers,
+                params={"api-version": self.api_version},
+                json=payload,
+                timeout=20,
+            )
+            if r.status_code == 409:
+                # Another sync thread won the race, or the name differs only by
+                # case. Either way the repository is there now.
+                logger.debug(f"[{name}] Destination repository already existed.")
+                return
+            r.raise_for_status()
+        except requests.exceptions.HTTPError as e:
+            status = e.response.status_code if e.response is not None else None
+            raise RuntimeError(
+                f"[{name}] Could not create the Azure DevOps repository in project "
+                f"'{self.project}': HTTP {status}{_scope_hint(status, manage=True)}"
+            ) from e
+        except requests.exceptions.RequestException as e:
+            raise RuntimeError(
+                f"[{name}] Could not reach Azure DevOps to create the destination "
+                f"repository: {e}"
+            ) from e
+
+        logger.info(f"[{name}] Created Azure DevOps repository.")
+
+    def _resolve_project_id(self):
+        """Looks up (and caches) the destination project's GUID."""
+        if self._project_id:
+            return self._project_id
+
+        url = f"{self.org_url}/_apis/projects/{quote(self.project, safe='')}"
+        try:
+            data = self._get_json(url, None, f"Azure DevOps project '{self.project}'").json()
+        except requests.exceptions.HTTPError as e:
+            status = e.response.status_code if e.response is not None else None
+            if status == 404:
+                raise RuntimeError(
+                    f"Azure DevOps project '{self.project}' does not exist in "
+                    f"{self.org_url} (Holocron creates repositories, not projects)."
+                ) from e
+            raise RuntimeError(
+                f"Could not look up Azure DevOps project '{self.project}': "
+                f"HTTP {status}{_scope_hint(status)}"
+            ) from e
+        except requests.exceptions.RequestException as e:
+            raise RuntimeError(
+                f"Could not reach Azure DevOps to look up project '{self.project}': {e}"
+            ) from e
+
+        project_id = data.get("id")
+        if not project_id:
+            raise RuntimeError(
+                f"Azure DevOps returned no id for project '{self.project}'."
+            )
+
+        self._project_id = project_id
+        return project_id
+
+
+def _scope_hint(status, manage=False):
+    """Appends the usual cause for an auth failure: a PAT without the scope."""
+    if status not in (401, 403):
+        return ""
+    scope = "Code (Read, write, & manage)" if manage else "Code (Read & write)"
+    return f" (the PAT most likely lacks the '{scope}' scope)"

@@ -57,8 +57,8 @@ def parse_args():
     parser.add_argument("--verbose", action="store_true", default=get_bool_env("HOLOCRON_VERBOSE"), help="Print detailed logs")
     
     # Provider Selection
-    parser.add_argument("--source", type=str, choices=["github", "gitlab", "azure"], default=os.environ.get("HOLOCRON_SOURCE", "github"), help="Source provider (default: github). 'azure' is Azure DevOps Services (cloud), source-only.")
-    parser.add_argument("--destination", type=str, choices=["github", "gitlab", "local"], default=os.environ.get("HOLOCRON_DESTINATION", "gitlab"), help="Destination provider (default: gitlab)")
+    parser.add_argument("--source", type=str, choices=["github", "gitlab", "azure"], default=os.environ.get("HOLOCRON_SOURCE", "github"), help="Source provider (default: github). 'azure' is Azure DevOps Services (cloud).")
+    parser.add_argument("--destination", type=str, choices=["github", "gitlab", "azure", "local"], default=os.environ.get("HOLOCRON_DESTINATION", "gitlab"), help="Destination provider (default: gitlab). 'azure' requires --azure-project: repositories are created inside a project.")
 
     # value options
     parser.add_argument("--interval", type=int, default=int(os.environ.get("HOLOCRON_INTERVAL", 60)), help="Seconds to wait between checks (default: 60)")
@@ -79,8 +79,8 @@ def parse_args():
     parser.add_argument("--repo-list", type=str, default=HOLOCRON_REPO_LIST,
                         help="File holding one include pattern per line ('#' comments allowed) -- an explicit fetch list for large organisations")
 
-    parser.add_argument("--azure-org-url", type=str, default=AZURE_DEVOPS_ORG_URL, help="Azure DevOps organisation URL, e.g. https://dev.azure.com/my-org (required for --source azure)")
-    parser.add_argument("--azure-project", type=str, default=AZURE_DEVOPS_PROJECT, help="Limit the Azure DevOps source to a single project (default: every project in the organisation)")
+    parser.add_argument("--azure-org-url", type=str, default=AZURE_DEVOPS_ORG_URL, help="Azure DevOps organisation URL, e.g. https://dev.azure.com/my-org (required for --source/--destination azure)")
+    parser.add_argument("--azure-project", type=str, default=AZURE_DEVOPS_PROJECT, help="Azure DevOps project. As a source it narrows the mirror to one project (default: every project in the organisation); as a destination it is required, and is where repositories are created")
     parser.add_argument("--github-status", action="store_true", default=get_bool_env("HOLOCRON_GITHUB_STATUS"), help="Provision a per-project GITHUB_REPO CI/CD variable on GitLab so runners can report CI checks back to the GitHub commit (requires GitHub source, GitLab destination)")
 
     # Webhook listener (push-triggered syncs). Runs alongside --watch.
@@ -92,13 +92,21 @@ def parse_args():
 
     return parser.parse_args()
 
-def validate_config(source, destination, backup_only=False, azure_org_url=None):
+def validate_config(source, destination, backup_only=False, azure_org_url=None,
+                    azure_project=None):
     """
     Validates environment variables and arguments.
     Returns: a {provider_name: token} mapping (values may be None for providers
     that are not in use).
     """
     tokens = {name: os.environ.get(env) for name, env in TOKEN_ENV_VARS.items()}
+
+    # Source and destination Azure DevOps share one organisation URL, so this
+    # would mirror an organisation onto itself, repo by repo.
+    if source == "azure" and destination == "azure" and not backup_only:
+        print("CRITICAL: --source azure and --destination azure both point at "
+              "AZURE_DEVOPS_ORG_URL, which would mirror the organisation onto itself.")
+        sys.exit(1)
 
     # Check source requirements
     if not tokens.get(source):
@@ -116,6 +124,19 @@ def validate_config(source, destination, backup_only=False, azure_org_url=None):
             print(f"CRITICAL: Missing {TOKEN_ENV_VARS[destination]} (required for Destination: {destination}).")
             if destination == "gitlab":
                 print("Please set GITLAB_TOKEN or use --backup-only.")
+            sys.exit(1)
+
+    if not backup_only and destination == "azure":
+        if not (azure_org_url or AZURE_DEVOPS_ORG_URL):
+            print("CRITICAL: Missing AZURE_DEVOPS_ORG_URL / --azure-org-url "
+                  "(required for Destination: azure, e.g. https://dev.azure.com/my-org).")
+            sys.exit(1)
+        # Azure DevOps repositories live inside a project and are not created on
+        # first push, so Holocron has to be told which project to create them in.
+        if not (azure_project or AZURE_DEVOPS_PROJECT):
+            print("CRITICAL: Missing AZURE_DEVOPS_PROJECT / --azure-project "
+                  "(required for Destination: azure -- repositories are created "
+                  "inside a project).")
             sys.exit(1)
 
     return tokens

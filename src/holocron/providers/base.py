@@ -42,3 +42,15 @@ class Provider(ABC):
         e.g., Unprotect branches on GitLab to allow force push.
         """
         pass
+
+    def push_refspecs(self) -> Optional[list[str]]:
+        """
+        Optional hook: which refs to push, if not all of them.
+
+        None (the default) means `git push --mirror`: every local ref is pushed
+        and every remote ref without a local counterpart is deleted. Returning a
+        list of refspecs restricts the push to those, which a destination needs
+        when the server owns refs of its own that must not be pushed over or
+        pruned away (see AzureDevOpsDestinationProvider).
+        """
+        return None

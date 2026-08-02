@@ -38,6 +38,7 @@ While a simple script works for one repo, managing hundreds requires a robust to
     - **Azure DevOps Services** (cloud, `dev.azure.com`) — see [Azure DevOps as a source](#azure-devops-as-a-source).
 - **Supported Destinations**:
     - **GitLab**: Full mirror with automatic creation/updates (requires existing empty project or "create on push").
+    - **Azure DevOps Services**: Full mirror; missing repositories are created in the target project — see [Azure DevOps as a destination](#azure-devops-as-a-destination).
     - **Local Disk**: Create a local-only backup archive without needing a second Git server.
 - **Parallel Syncing**: Sync multiple repositories concurrently for maximum speed.
 - **Continuous Watch Mode**: Polls for changes and syncs only when necessary.
@@ -93,9 +94,9 @@ Holocron uses environment variables for secrets:
  | `GITLAB_TOKEN` | Your GitLab Personal Access Token (api scope) | No (if `--backup-only`) |
  | `GITLAB_API_URL` | URL to your GitLab API (default: `http://gitlab.local/api/v4`) | No (if `--backup-only`) |
  | `GITHUB_API_URL` | URL to your GitHub API (default: `https://api.github.com`) | No |
- | `AZURE_DEVOPS_TOKEN` | Azure DevOps Personal Access Token | **Yes** (if `--source azure`) |
- | `AZURE_DEVOPS_ORG_URL` | Azure DevOps organisation URL, e.g. `https://dev.azure.com/my-org` | **Yes** (if `--source azure`) |
- | `AZURE_DEVOPS_PROJECT` | Limit the Azure DevOps source to one project (default: every project in the org) | No |
+ | `AZURE_DEVOPS_TOKEN` | Azure DevOps Personal Access Token | **Yes** (if `azure` is the source or destination) |
+ | `AZURE_DEVOPS_ORG_URL` | Azure DevOps organisation URL, e.g. `https://dev.azure.com/my-org` | **Yes** (if `azure` is the source or destination) |
+ | `AZURE_DEVOPS_PROJECT` | Azure DevOps project. As a source: limit the mirror to one project (default: every project in the org). As a destination: where repositories are created | **Yes** (if `--destination azure`) |
  | `HOLOCRON_INCLUDE` | Comma-separated glob patterns; only matching repositories are mirrored | No |
  | `HOLOCRON_EXCLUDE` | Comma-separated glob patterns to skip (applied after includes) | No |
  | `HOLOCRON_REPO_LIST` | Path to a file holding one include pattern per line | No |
@@ -138,15 +139,26 @@ Holocron uses environment variables for secrets:
 
  #### Azure DevOps Token (`AZURE_DEVOPS_TOKEN`)
 
- API calls made: `GET /_apis/git/repositories`,
- `GET /_apis/git/repositories/{id}/pushes`, `git clone` — all read-only.
+ The PAT is sent as HTTP Basic auth with an empty username, which is what Azure
+ DevOps expects for both the REST API and `git` over HTTPS. A PAT is bound to a
+ single organisation (or "all accessible organisations"), so mirror one
+ organisation per Holocron instance.
 
- **As source (the only supported role)**
+ **As source (read-only)**
  - Scope: **Code (Read)** (`vso.code`).
- - The PAT is sent as HTTP Basic auth with an empty username, which is what
-   Azure DevOps expects for both the REST API and `git` over HTTPS.
- - A PAT is bound to a single organisation (or "all accessible organisations");
-   mirror one organisation per Holocron instance.
+ - API calls made: `GET /_apis/git/repositories`,
+   `GET /_apis/git/repositories/{id}/pushes`, `git clone`.
+
+ **As destination**
+ - Scope: **Code (Read, write, & manage)** (`vso.code_manage`) — needed to create
+   repositories. **Code (Read & write)** (`vso.code_write`) is enough only if every
+   destination repository already exists.
+ - API calls made: `GET /_apis/projects/{project}`,
+   `GET /{project}/_apis/git/repositories/{name}`,
+   `POST /{project}/_apis/git/repositories`, `git push`.
+ - The PAT's identity needs **Force push (rewrite history, delete branches and
+   tags)** on the target repositories; `git push --mirror` rewrites refs, and Azure
+   DevOps denies that by default on branches with policies.
 
 ### Command Line Arguments
 | Flag | Default | Description |
@@ -167,9 +179,9 @@ Holocron uses environment variables for secrets:
 | `--webhook-key` | _(none)_ | TLS private key file (pair with `--webhook-cert`) |
 | `--github-status` | False | Provision a per-project `GITHUB_REPO` CI/CD variable on GitLab so runners can report CI checks back to GitHub (GitHub→GitLab only) |
 | `--source` | `github` | Source provider: `github`, `gitlab` or `azure` |
-| `--destination` | `gitlab` | Destination provider: `github`, `gitlab` or `local` |
-| `--azure-org-url` | _(none)_ | Azure DevOps organisation URL (required for `--source azure`) |
-| `--azure-project` | _(none)_ | Limit the Azure DevOps source to a single project |
+| `--destination` | `gitlab` | Destination provider: `github`, `gitlab`, `azure` or `local` |
+| `--azure-org-url` | _(none)_ | Azure DevOps organisation URL (required when `azure` is the source or destination) |
+| `--azure-project` | _(none)_ | Azure DevOps project — narrows the source to one project; **required** as a destination, where it is the project repositories are created in |
 | `--include` | _(none)_ | Only mirror repositories matching these glob patterns (repeatable, comma-separated) |
 | `--exclude` | _(none)_ | Skip repositories matching these glob patterns (applied after `--include`) |
 | `--repo-list` | _(none)_ | File holding one include pattern per line — an explicit fetch list |
@@ -221,8 +233,8 @@ Run with `--dry-run --verbose` first to see exactly which repositories the patte
 ### Azure DevOps as a source
 
 Holocron can mirror **from Azure DevOps Services** (the cloud edition, `dev.azure.com`)
-to GitLab or to local disk. Azure DevOps is **source-only** — Holocron does not create
-or push to Azure DevOps repositories.
+to GitLab, to another Azure DevOps project or to local disk. For the other direction, see
+[Azure DevOps as a destination](#azure-devops-as-a-destination).
 
 ```bash
 export AZURE_DEVOPS_TOKEN="your_pat"
@@ -301,6 +313,82 @@ lookup fails, the repository is treated as recently pushed rather than being ski
    holocron --source azure --destination gitlab --watch --interval 60 --window 10 --verbose
    ```
    (Webhook mode is GitHub-only; Azure DevOps syncs are poll-driven.)
+
+### Azure DevOps as a destination
+
+Holocron can also mirror **into** Azure DevOps Services, from GitHub, GitLab or local
+storage:
+
+```bash
+export GITHUB_TOKEN="your_github_pat"
+export AZURE_DEVOPS_TOKEN="your_azure_pat"
+export AZURE_DEVOPS_ORG_URL="https://dev.azure.com/my-org"
+export AZURE_DEVOPS_PROJECT="Mirrors"
+
+holocron --source github --destination azure
+```
+
+`--azure-project` (or `AZURE_DEVOPS_PROJECT`) is **required** here and Holocron refuses to
+start without it: Azure DevOps repositories live inside a project, and Holocron creates
+repositories but never projects. Create the target project yourself first.
+
+**Repositories are created for you.** Unlike GitLab, Azure DevOps does not create a
+repository on first push — pushing to a path that does not exist simply fails. Before each
+push Holocron checks whether the destination repository exists and creates it (`POST
+/{project}/_apis/git/repositories`) if it does not. The result is cached per run, so a
+watch loop in its steady state makes no provisioning calls at all. If the repository is
+missing and cannot be created, that repository's sync fails loudly with the HTTP status
+and a scope hint rather than bottoming out in an opaque `git push` error; the next cycle
+retries.
+
+The destination repository is named after the **mirror name**, which for an Azure DevOps
+source is the slugified one (see the name-mapping rules above). Run `--dry-run` once to
+review the names before anything is created.
+
+**What gets pushed.** For an Azure DevOps destination Holocron pushes `refs/heads/*` and
+`refs/tags/*` only (force, with pruning inside those namespaces), instead of the
+`git push --mirror` used for other destinations. `--mirror` is wrong here in both
+directions: a GitHub-sourced mirror carries `refs/pull/*`, which Azure DevOps reserves and
+rejects, and `--mirror` would also try to delete the refs Azure maintains for its *own*
+pull requests, since they have no counterpart in the source. Branch deletions and tag
+deletions still propagate.
+
+**Force push must be allowed.** Mirroring rewrites refs, so the PAT's identity needs the
+**Force push (rewrite history, delete branches and tags)** permission on the target
+repositories, and branch policies on the destination will otherwise reject the push.
+Holocron does not relax Azure DevOps branch policies the way it does GitLab branch
+protection — grant the permission (or mirror into a project without policies).
+
+**Same-organisation mirroring is refused.** `--source azure --destination azure` shares one
+`AZURE_DEVOPS_ORG_URL`, so it would mirror the organisation onto itself; Holocron exits
+rather than doing that. Use two Holocron instances (one per organisation) if you need
+Azure→Azure across organisations.
+
+#### Testing an Azure DevOps destination
+
+```bash
+uv run pytest tests/test_azure_destination.py tests/test_azure_destination_e2e.py -v
+```
+
+`test_azure_destination.py` covers URL construction, the provisioning calls, the caching
+and every failure path. `test_azure_destination_e2e.py` runs the real thing locally: a
+stub Azure DevOps REST API in front of a real `git http-backend` smart-HTTP server, driven
+by the actual sync engine — so the repository really is created through the API and
+`git push` really lands the refs in a bare repo on disk. No credentials, no network.
+
+Against a real organisation, work up in the same order as for the source:
+
+1. Confirm the PAT can see the project:
+   ```bash
+   curl -u :"$AZURE_DEVOPS_TOKEN" \
+     "$AZURE_DEVOPS_ORG_URL/_apis/projects/$AZURE_DEVOPS_PROJECT?api-version=7.1"
+   ```
+2. `--dry-run` to review the destination names.
+3. Mirror **one** repository into a throwaway project first:
+   ```bash
+   holocron --source github --destination azure --include my-test-repo --verbose
+   ```
+4. Compare `git ls-remote` on both sides — branches and tags should match exactly.
 
 ### Webhook Mode (push-triggered sync)
 

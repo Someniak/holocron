@@ -21,7 +21,7 @@ from .utils import handle_credits, print_storage_estimate
 from .filters import build_repo_filter
 from .providers.gitlab import GitLabProvider
 from .providers.github import GitHubProvider
-from .providers.azure import AzureDevOpsProvider
+from .providers.azure import AzureDevOpsProvider, AzureDevOpsDestinationProvider
 from .webhook import start_webhook_server
 
 @log_execution
@@ -163,15 +163,23 @@ def start_webhook_listener(config, source_provider, destination_provider, synced
 
 def get_provider(name, token, api_url_github, api_url_gitlab, namespace=None,
                  provision_status_var=False, azure_org_url=None, azure_project=None,
-                 repo_filter=None):
-    """Factory to get the correct provider instance."""
+                 repo_filter=None, role="source"):
+    """
+    Factory to get the correct provider instance.
+
+    `role` matters for Azure DevOps: reading from an organisation and writing to
+    one need different URL construction (the source clones the URL the API
+    reports; the destination builds `{org}/{project}/_git/{name}` itself) and
+    different behaviour on push, so they are separate classes.
+    """
     if name == "github":
         return GitHubProvider(token, api_url_github)
     elif name == "gitlab":
         return GitLabProvider(api_url_gitlab, token, namespace,
                               provision_status_var=provision_status_var)
     elif name == "azure":
-        # Azure DevOps is source-only; it is not offered as a --destination.
+        if role == "destination":
+            return AzureDevOpsDestinationProvider(azure_org_url, token, project=azure_project)
         # The filter is handed to the source so it can drop repositories before
         # spending an API call each on their last-push date.
         return AzureDevOpsProvider(azure_org_url, token, project=azure_project,
@@ -196,7 +204,8 @@ def main():
     azure_project = getattr(args, "azure_project", None) or AZURE_DEVOPS_PROJECT
 
     tokens = validate_config(args.source, args.destination, args.backup_only,
-                             azure_org_url=azure_org_url)
+                             azure_org_url=azure_org_url,
+                             azure_project=azure_project)
 
     # Repository selection (--include/--exclude/--repo-list). Built before the
     # providers so a mistyped pattern file fails at startup, and so a source can
@@ -254,6 +263,7 @@ def main():
             provision_status_var=provision_status_var,
             azure_org_url=azure_org_url,
             azure_project=azure_project,
+            role="destination",
         )
 
     logger.info("Initializing Holocron...")
