@@ -276,3 +276,189 @@ def test_run_sync_cycle_survives_fetch_failure(mock_logger):
     mock_logger.error.assert_called()
     log_calls = [str(c) for c in mock_logger.error.call_args_list]
     assert any("failed to fetch repositories" in c for c in log_calls)
+
+
+# --- Azure DevOps source wiring ---------------------------------------------
+
+def test_get_provider_builds_azure_source():
+    from holocron.__main__ import get_provider
+    from holocron.providers.azure import AzureDevOpsProvider
+
+    provider = get_provider(
+        "azure", "az_token", "https://api.github.com", "http://gitlab.local/api/v4",
+        azure_org_url="https://dev.azure.com/acme", azure_project="Proj",
+    )
+
+    assert isinstance(provider, AzureDevOpsProvider)
+    assert provider.org_url == "https://dev.azure.com/acme"
+    assert provider.project == "Proj"
+    assert provider.token == "az_token"
+
+
+@patch("holocron.__main__.parse_args")
+@patch.dict(os.environ, {"AZURE_DEVOPS_TOKEN": "az_token", "GITLAB_TOKEN": "gl_token"}, clear=True)
+@patch("requests.get")
+@patch("holocron.__main__.sync_one_repo")
+def test_main_azure_source_to_gitlab(mock_sync, mock_get, mock_parse):
+    """
+    End-to-end wiring: a stubbed Azure DevOps API drives one sync cycle and the
+    repository reaches sync_one_repo with an authenticated Azure clone URL.
+    """
+    args = argparse.Namespace(
+        watch=False, dry_run=False, concurrency=1, backup_only=False, window=10,
+        verbose=False, storage="/tmp/data", source="azure", destination="gitlab",
+        credits=False, gitlab_namespace="mirrors", checkout=False, interval=10,
+        azure_org_url="https://dev.azure.com/acme", azure_project=None,
+    )
+    mock_parse.return_value = args
+
+    repos_resp = MagicMock()
+    repos_resp.status_code = 200
+    repos_resp.headers = {"Content-Type": "application/json"}
+    repos_resp.raise_for_status.return_value = None
+    repos_resp.json.return_value = {"value": [{
+        "id": "abc", "name": "widgets", "project": {"name": "Proj"},
+        "defaultBranch": "refs/heads/main", "size": 1024,
+        "remoteUrl": "https://acme@dev.azure.com/acme/Proj/_git/widgets",
+    }]}
+
+    pushes_resp = MagicMock()
+    pushes_resp.status_code = 200
+    pushes_resp.headers = {"Content-Type": "application/json"}
+    pushes_resp.raise_for_status.return_value = None
+    pushes_resp.json.return_value = {"value": [{"date": "2024-05-04T10:11:12.1234567Z"}]}
+
+    mock_get.side_effect = [repos_resp, pushes_resp]
+
+    main()
+
+    mock_sync.assert_called_once()
+    kwargs = mock_sync.call_args[1]
+    repo = kwargs["repo"]
+    assert repo.name == "widgets"
+    assert kwargs["source_provider"].get_remote_url(repo) == (
+        "https://oauth2:az_token@dev.azure.com/acme/Proj/_git/widgets"
+    )
+    assert kwargs["destination_provider"].get_remote_url(repo) == (
+        "http://oauth2:gl_token@gitlab.local/mirrors/widgets.git"
+    )
+
+
+# --- Azure DevOps destination wiring -----------------------------------------
+
+def test_get_provider_builds_azure_destination():
+    """The same --source/--destination name maps onto two different classes."""
+    from holocron.__main__ import get_provider
+    from holocron.providers.azure import AzureDevOpsDestinationProvider
+
+    provider = get_provider(
+        "azure", "az_token", "https://api.github.com", "http://gitlab.local/api/v4",
+        azure_org_url="https://dev.azure.com/acme", azure_project="Mirrors",
+        role="destination",
+    )
+
+    assert isinstance(provider, AzureDevOpsDestinationProvider)
+    assert provider.project == "Mirrors"
+    assert provider.token == "az_token"
+
+
+@patch("holocron.__main__.parse_args")
+@patch.dict(os.environ, {"GITHUB_TOKEN": "gh_token", "AZURE_DEVOPS_TOKEN": "az_token"}, clear=True)
+@patch("requests.get")
+@patch("holocron.__main__.sync_one_repo")
+def test_main_github_source_to_azure_destination(mock_sync, mock_get, mock_parse):
+    """A GitHub repository reaches sync_one_repo with an Azure DevOps push URL."""
+    args = argparse.Namespace(
+        watch=False, dry_run=False, concurrency=1, backup_only=False, window=10,
+        verbose=False, storage="/tmp/data", source="github", destination="azure",
+        credits=False, gitlab_namespace=None, checkout=False, interval=10,
+        azure_org_url="https://dev.azure.com/acme", azure_project="Mirrors",
+    )
+    mock_parse.return_value = args
+
+    repos_resp = MagicMock()
+    repos_resp.status_code = 200
+    repos_resp.raise_for_status.return_value = None
+    repos_resp.json.return_value = [{
+        "id": 1, "name": "widgets", "full_name": "acme/widgets",
+        "clone_url": "https://github.com/acme/widgets.git", "size": 100,
+        "pushed_at": "2024-05-04T10:11:12Z",
+    }]
+
+    empty_resp = MagicMock()
+    empty_resp.status_code = 200
+    empty_resp.raise_for_status.return_value = None
+    empty_resp.json.return_value = []
+
+    # /user/repos, then /user/orgs (empty).
+    mock_get.side_effect = [repos_resp, empty_resp]
+
+    main()
+
+    mock_sync.assert_called_once()
+    kwargs = mock_sync.call_args[1]
+    repo = kwargs["repo"]
+    assert kwargs["destination_provider"].get_remote_url(repo) == (
+        "https://oauth2:az_token@dev.azure.com/acme/Mirrors/_git/widgets"
+    )
+
+
+# --- repository filtering ----------------------------------------------------
+
+@patch("holocron.__main__.sync_one_repo")
+def test_run_sync_cycle_applies_filter(mock_sync):
+    from holocron.filters import RepoFilter
+
+    source = MagicMock()
+    source.fetch_repos.return_value = [
+        Repository(name="api", clone_url="u1"),
+        Repository(name="docs", clone_url="u2"),
+        Repository(name="api-archive", clone_url="u3"),
+    ]
+    config = dict(concurrency=1, storage="/tmp/data", watch=False, window=10,
+                  backup_only=True, dry_run=False, checkout=False)
+
+    synced = run_sync_cycle(config, source, None, {},
+                            repo_filter=RepoFilter(include=["api*"], exclude=["*-archive"]))
+
+    assert synced == 1
+    assert [c[1]["repo"].name for c in mock_sync.call_args_list] == ["api"]
+
+
+@patch("holocron.__main__.sync_one_repo")
+def test_run_sync_cycle_without_filter_syncs_everything(mock_sync):
+    source = MagicMock()
+    source.fetch_repos.return_value = [
+        Repository(name="api", clone_url="u1"),
+        Repository(name="docs", clone_url="u2"),
+    ]
+    config = dict(concurrency=1, storage="/tmp/data", watch=False, window=10,
+                  backup_only=True, dry_run=False, checkout=False)
+
+    assert run_sync_cycle(config, source, None, {}) == 2
+
+
+@patch.dict(os.environ, {"HOLOCRON_WEBHOOK_SECRET": "s"}, clear=True)
+@patch("holocron.__main__.start_webhook_server")
+@patch("holocron.__main__.sync_one_repo")
+def test_webhook_deliveries_respect_the_filter(mock_sync, mock_start):
+    """
+    A filtered-out repo must stay filtered out however the sync is triggered --
+    otherwise a webhook delivery mirrors what the poll loop deliberately skips.
+    """
+    from holocron.__main__ import start_webhook_listener
+    from holocron.filters import RepoFilter
+
+    config = dict(concurrency=1, storage="/tmp/data", dry_run=False,
+                  backup_only=True, checkout=False, webhook_port=8080,
+                  webhook_path="/webhook")
+
+    start_webhook_listener(config, MagicMock(), None, {},
+                           repo_filter=RepoFilter(include=["api"]))
+    on_push = mock_start.call_args[1]["on_push"]
+
+    on_push(Repository(name="docs", clone_url="u"))
+    mock_sync.assert_not_called()
+
+    on_push(Repository(name="api", clone_url="u"))
+    assert mock_sync.call_count == 1

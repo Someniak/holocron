@@ -3,6 +3,74 @@
 
 ## Unreleased
 
+### Features
+
+- Add **Azure DevOps Services (cloud) as a source provider** (`--source azure`),
+  so repositories in a `dev.azure.com` organisation can be mirrored to GitLab or
+  to local disk. Configure it with `AZURE_DEVOPS_TOKEN` (PAT, `Code (Read)`
+  scope) and `AZURE_DEVOPS_ORG_URL`, optionally narrowing to one project with
+  `--azure-project` / `AZURE_DEVOPS_PROJECT`.
+
+  Provider specifics handled along the way: repository names are slugified to a
+  safe path component and qualified with the project name when the same name
+  exists in more than one project (Azure DevOps names are only unique per
+  project); the PAT is pinned to the configured organisation's host *and* path,
+  and any userinfo already present in the clone URL (`https://org@dev.azure.com/`)
+  is stripped before credentials are attached; sizes are converted from bytes to
+  KB; disabled and uninitialised repositories are skipped; a non-JSON response is
+  reported as a token problem, because Azure DevOps answers unauthenticated
+  requests with an HTML sign-in page instead of a `401`. The repository list
+  carries no timestamp, so `--window` filtering fetches each repository's most
+  recent push separately (in parallel), falling back to "recently pushed" if that
+  lookup fails so a repo is never silently dropped from watch mode.
+
+- Add **Azure DevOps Services (cloud) as a destination provider**
+  (`--destination azure`), so GitHub, GitLab or Azure DevOps repositories can be
+  mirrored into a `dev.azure.com` project. `--azure-project` /
+  `AZURE_DEVOPS_PROJECT` is required and validated at startup: Azure DevOps
+  repositories live inside a project, and Holocron creates repositories but not
+  projects. The PAT needs the `Code (Read, write, & manage)` scope.
+
+  Unlike GitLab, Azure DevOps does not create a repository on first push, so the
+  destination checks for the repository and creates it through the REST API when
+  it is missing, caching the result so a steady-state watch loop makes no
+  provisioning calls. A repository that is missing *and* cannot be created fails
+  that repository's sync with the HTTP status and a scope hint rather than an
+  opaque `git push` error, and is retried next cycle. The push URL is built from
+  the configured organisation and project rather than from the source's clone
+  URL. `--source azure --destination azure` is refused, since both read the same
+  `AZURE_DEVOPS_ORG_URL` and it would mirror an organisation onto itself.
+
+- Providers can now declare which refs a mirror push should move
+  (`Provider.push_refspecs`). The default is unchanged (`git push --mirror`);
+  the Azure DevOps destination pushes `refs/heads/*` and `refs/tags/*` only,
+  with pruning inside those namespaces. `--mirror` is wrong for Azure DevOps in
+  both directions: a GitHub-sourced mirror carries `refs/pull/*`, which Azure
+  DevOps reserves and rejects, and `--mirror` would additionally try to delete
+  the refs Azure maintains for its own pull requests.
+
+- Add **repository selection** for every source: `--include` / `--exclude` glob
+  patterns (repeatable and comma-separated) and `--repo-list FILE`, an explicit
+  fetch list of one pattern per line. Patterns are matched case-insensitively
+  against both the mirror name and the fully-qualified source path, so `acme/*`
+  selects a GitHub org and `MyProject/*` an Azure DevOps project. Without any
+  include patterns everything is mirrored, as before; excludes are applied after
+  includes and always win.
+
+  The filter is applied centrally so every source is covered, and again on
+  webhook deliveries so a push to an excluded repository cannot bypass the
+  selection. The Azure DevOps source additionally applies it before its
+  per-repository last-push lookups, which is what makes a large organisation
+  cheap to mirror partially: mirror names are still resolved over the full
+  repository list first, so narrowing the filter never renames an existing
+  mirror. A missing `--repo-list` file is a startup error rather than a silent
+  fall-through to mirroring everything.
+
+### Changed
+
+- `validate_config` now returns a `{provider: token}` mapping instead of a
+  `(gh_token, gl_token)` tuple, so new providers no longer widen the signature.
+
 ## v1.6.6 - 2026-07-17
 
 ### Infrastructure

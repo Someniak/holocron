@@ -190,7 +190,8 @@ def test_sync_one_repo_full_flow_success(mock_logger, mock_exists, mock_makedirs
     source_provider.get_remote_url.return_value = "src_url"
     destination_provider = MagicMock()
     destination_provider.get_remote_url.return_value = "dest_url"
-    
+    destination_provider.push_refspecs.return_value = None
+
     # 1. Exists -> True (Fetch)
     # 2. Checkout dir Exists -> True (Pull)
     mock_exists.return_value = True
@@ -209,6 +210,56 @@ def test_sync_one_repo_full_flow_success(mock_logger, mock_exists, mock_makedirs
     assert any("remote" in cmd for cmd in cmds)
     assert any("push" in cmd for cmd in cmds)
     assert any("pull" in cmd for cmd in cmds)
+
+
+# --- Push refspecs ---
+
+def _push_cmd(mock_run):
+    """The git push invocation out of the recorded subprocess calls."""
+    cmds = [call[0][0] for call in mock_run.call_args_list]
+    return next(cmd for cmd in cmds if "push" in cmd)
+
+
+def _sync_with_refspecs(refspecs, mock_run, mock_exists):
+    repo = Repository(name='repo', clone_url='https://github.com/u/repo.git')
+    source_provider = MagicMock()
+    source_provider.get_remote_url.return_value = "src_url"
+    destination_provider = MagicMock()
+    destination_provider.get_remote_url.return_value = "dest_url"
+    destination_provider.push_refspecs.return_value = refspecs
+    mock_exists.return_value = True
+
+    sync_one_repo(repo, storage_path="/tmp", source_provider=source_provider,
+                  destination_provider=destination_provider)
+    return _push_cmd(mock_run)
+
+
+@patch("subprocess.run")
+@patch("os.makedirs")
+@patch("os.path.exists")
+def test_push_defaults_to_mirror(mock_exists, mock_makedirs, mock_run):
+    """No refspecs (the default for GitHub/GitLab) means push --mirror, as before."""
+    cmd = _sync_with_refspecs(None, mock_run, mock_exists)
+    assert "--mirror" in cmd
+    assert "--prune" not in cmd
+
+
+@patch("subprocess.run")
+@patch("os.makedirs")
+@patch("os.path.exists")
+def test_push_honours_destination_refspecs(mock_exists, mock_makedirs, mock_run):
+    """A destination that owns refs pushes only what it asked for."""
+    refspecs = ["+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*"]
+    cmd = _sync_with_refspecs(refspecs, mock_run, mock_exists)
+
+    assert "--mirror" not in cmd
+    assert "--prune" in cmd
+    assert cmd[-2:] == refspecs
+    # A --mirror clone sets remote.origin.mirror, which makes git reject
+    # explicit refspecs; it has to be overridden for this invocation.
+    assert "remote.origin.mirror=false" in cmd
+    # Pushing by remote name, not URL, keeps the token out of the command line.
+    assert "origin" in cmd and "dest_url" not in cmd
 
 
 # --- Untrusted repository-field validation ---
