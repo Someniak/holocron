@@ -140,3 +140,113 @@ def test_get_remote_url_allows_github_enterprise_host():
     repo = Repository(name="r", clone_url="https://ghe.corp/o/r.git")
     url = p.get_remote_url(repo)
     assert url == "https://oauth2:SECRET@ghe.corp/o/r.git"
+
+
+# --- Token pinning to the configured origin (scheme + host + port) ---
+
+def test_get_remote_url_refuses_same_host_different_port():
+    """Same host on another port is a different service; never send the token."""
+    p = GitHubProvider(token="SECRET", api_url="http://127.0.0.1:18061/api/v3")
+    repo = Repository(name="r", clone_url="http://127.0.0.1:18062/pwn.git")
+    with pytest.raises(ValueError, match="does not match the configured GitHub origin"):
+        p.get_remote_url(repo)
+
+
+def test_get_remote_url_refuses_cleartext_downgrade():
+    """http against an https API would send the token in cleartext."""
+    p = GitHubProvider(token="SECRET", api_url="https://api.github.com")
+    repo = Repository(name="r", clone_url="http://api.github.com/o/r.git")
+    with pytest.raises(ValueError):
+        p.get_remote_url(repo)
+
+
+def test_get_remote_url_accepts_explicit_default_port():
+    """An explicit :443 on an https host is the same origin, so it is allowed."""
+    p = GitHubProvider(token="SECRET", api_url="https://api.github.com")
+    repo = Repository(name="r", clone_url="https://github.com:443/o/r.git")
+    assert p.get_remote_url(repo) == "https://oauth2:SECRET@github.com:443/o/r.git"
+
+
+def test_get_remote_url_allows_configured_non_default_port():
+    """The origin the operator configured is accepted, port included."""
+    p = GitHubProvider(token="SECRET", api_url="https://ghe.corp:8443/api/v3")
+    repo = Repository(name="r", clone_url="https://ghe.corp:8443/o/r.git")
+    assert p.get_remote_url(repo) == "https://oauth2:SECRET@ghe.corp:8443/o/r.git"
+
+
+def test_get_remote_url_refuses_unconfigured_port_on_ghe():
+    p = GitHubProvider(token="SECRET", api_url="https://ghe.corp:8443/api/v3")
+    repo = Repository(name="r", clone_url="https://ghe.corp/o/r.git")
+    with pytest.raises(ValueError):
+        p.get_remote_url(repo)
+
+
+def test_get_remote_url_refuses_malformed_port():
+    p = GitHubProvider(token="SECRET", api_url="https://api.github.com")
+    repo = Repository(name="r", clone_url="https://github.com:notaport/o/r.git")
+    with pytest.raises(ValueError):
+        p.get_remote_url(repo)
+
+
+def test_get_remote_url_keeps_cleartext_local_development_working():
+    """A plain-http configured API still works for its own origin."""
+    p = GitHubProvider(token="SECRET", api_url="http://127.0.0.1:8080/api/v3")
+    repo = Repository(name="r", clone_url="http://127.0.0.1:8080/o/r.git")
+    assert p.get_remote_url(repo) == "http://oauth2:SECRET@127.0.0.1:8080/o/r.git"
+
+
+# --- Pagination termination ---
+
+def _resp(items, link=None, next_page=None):
+    r = Mock()
+    r.json.return_value = items
+    r.raise_for_status.return_value = None
+    headers = {}
+    if link is not None:
+        headers["Link"] = link
+    r.headers = headers
+    return r
+
+
+@patch("requests.get")
+def test_get_all_pages_stops_when_no_next_link(mock_get):
+    """A short page is not the only terminal signal; the Link header is."""
+    mock_get.return_value = _resp([{"id": i} for i in range(100)], link='<x>; rel="last"')
+    provider = GitHubProvider(token="t")
+    items = provider._get_all_pages("http://api", {}, "ctx")
+    assert len(items) == 100
+    assert mock_get.call_count == 1
+
+
+@patch("requests.get")
+def test_get_all_pages_terminates_on_repeated_page(mock_get):
+    """An endpoint that ignores `page` must abort instead of looping forever."""
+    mock_get.return_value = _resp([{"id": i} for i in range(100)], link='<x>; rel="next"')
+    provider = GitHubProvider(token="t")
+    with pytest.raises(RuntimeError, match="no new items"):
+        provider._get_all_pages("http://api", {}, "ctx")
+    assert mock_get.call_count == 2
+
+
+@patch("requests.get")
+def test_get_all_pages_enforces_page_ceiling(mock_get):
+    """Even with ever-new items, the page count is bounded."""
+    counter = {"n": 0}
+
+    def _next_page(*args, **kwargs):
+        counter["n"] += 1
+        base = counter["n"] * 1000
+        return _resp([{"id": i} for i in range(base, base + 100)], link='<x>; rel="next"')
+
+    mock_get.side_effect = _next_page
+    provider = GitHubProvider(token="t")
+    with pytest.raises(RuntimeError, match="exceeded"):
+        provider._get_all_pages("http://api", {}, "ctx")
+
+
+@patch("requests.get")
+def test_get_all_pages_rejects_non_list_body(mock_get):
+    mock_get.return_value = _resp({"message": "Bad credentials"})
+    provider = GitHubProvider(token="t")
+    with pytest.raises(RuntimeError, match="expected a JSON list"):
+        provider._get_all_pages("http://api", {}, "ctx")

@@ -46,3 +46,45 @@ def test_log_execution_exception(mock_is_enabled, mock_debug):
     assert mock_debug.called
     args_str = str(mock_debug.call_args_list)
     assert "Exception" in args_str
+
+
+def test_logger_redacts_credentials_by_default():
+    """Scrubbing must not depend on each call site remembering to do it.
+
+    The dry-run leak happened because a new statement logged a token-bearing URL
+    without calling redact(); the filter makes that safe by construction.
+    """
+    import io
+
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(logging.Formatter("{message}", style="{"))
+    original_handlers = logger.handlers[:]
+    logger.handlers = [handler]
+    try:
+        logger.info(
+            "Would sync -> '%s'",
+            "https://oauth2:LIVEOPERATORTOKEN@gitlab.example.com/acme/r.git",
+        )
+    finally:
+        logger.handlers = original_handlers
+
+    emitted = stream.getvalue()
+    assert "LIVEOPERATORTOKEN" not in emitted
+    assert "https://***@gitlab.example.com/acme/r.git" in emitted
+
+
+def test_logger_redacts_args_and_leaves_plain_records_alone():
+    import io
+
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(logging.Formatter("{message}", style="{"))
+    original_handlers = logger.handlers[:]
+    logger.handlers = [handler]
+    try:
+        logger.warning("plain message, no url")
+    finally:
+        logger.handlers = original_handlers
+
+    assert stream.getvalue().strip() == "plain message, no url"

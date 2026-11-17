@@ -12,6 +12,7 @@ Uses only the standard library (http.server + hmac) to avoid adding a web
 framework dependency.
 """
 import os
+import socket
 import ssl
 import hmac
 import json
@@ -26,6 +27,15 @@ from .providers.base import Repository
 # GitHub caps webhook payloads at 25 MB. Refuse anything larger so a bad/hostile
 # Content-Length can't make us buffer unbounded data.
 _MAX_BODY_BYTES = 25 * 1024 * 1024
+
+# Max seconds a client may take to deliver a complete request. GitHub's own
+# delivery timeout is ~10s, so a generous 15s never breaks a real delivery,
+# while bounding how long a stalled connection can pin a handler thread.
+_READ_TIMEOUT_SECONDS = 15
+
+# GitHub's own delivery timeout is ~10s and a delivery is not worth replaying
+# beyond that, so anything older than this window is a replay or a stale event.
+_DELIVERY_FRESHNESS_SECONDS = 600
 
 # Generic 404 body returned for anything that isn't a valid signed delivery.
 # Deliberately bland and server-agnostic: it names no software and matches the
@@ -56,10 +66,22 @@ def build_repo_from_payload(payload: dict):
     Uses the bare repo `name` (matching the polling path, which keys mirror
     directories and GitLab paths on the short name). Returns None if the payload
     lacks the fields we need to sync.
+
+    The payload is untrusted in shape as well as content: a correctly signed
+    delivery may carry any JSON type, so every level is type-checked instead of
+    raising AttributeError/TypeError out of the handler thread.
     """
-    repo = payload.get("repository") or {}
+    if not isinstance(payload, dict):
+        return None
+
+    repo = payload.get("repository")
+    if not isinstance(repo, dict):
+        return None
+
     name = repo.get("name")
     clone_url = repo.get("clone_url")
+    if not isinstance(name, str) or not isinstance(clone_url, str):
+        return None
     if not name or not clone_url:
         return None
 
@@ -71,21 +93,53 @@ def build_repo_from_payload(payload: dict):
     try:
         if raw is not None:
             pushed_at = datetime.fromtimestamp(int(raw), tz=timezone.utc).replace(tzinfo=None)
-    except (ValueError, TypeError, OSError):
+    except (ValueError, TypeError, OSError, OverflowError):
+        # OverflowError: out-of-range timestamps; OSError: platform limits.
         pushed_at = None
     if pushed_at is None:
         pushed_at = datetime.now(timezone.utc).replace(tzinfo=None)
 
+    full_name = repo.get("full_name")
     return Repository(
         name=name,
         clone_url=clone_url,
-        size=repo.get("size", 0),
+        size=repo.get("size", 0) if isinstance(repo.get("size", 0), int) else 0,
         pushed_at=pushed_at,
         # GitHub push payloads carry `repository.full_name` ("owner/repo");
         # keep the webhook path in parity with the poll path so a
         # webhook-triggered sync can also provision the GITHUB_REPO CI variable.
-        full_name=repo.get("full_name"),
+        full_name=full_name if isinstance(full_name, str) else None,
     )
+
+
+def _is_stale(payload):
+    """
+    True if the delivery is older than the freshness window.
+
+    Only meaningful for `push` deliveries, where `repository.pushed_at` is the
+    timestamp of that push. Other events (a `pull_request` being opened or
+    reopened) carry a repository-level timestamp that says nothing about the
+    event's age, so they are not filtered here.
+
+    The poll path already skips repositories outside the sync window; without a
+    matching check a captured signed push delivery could be replayed to queue a
+    full sync indefinitely.
+    """
+    if not isinstance(payload, dict):
+        return False
+    repo = payload.get("repository")
+    if not isinstance(repo, dict):
+        return False
+    raw = repo.get("pushed_at")
+    if raw is None:
+        # No timestamp to judge by; let the sync itself decide.
+        return False
+    try:
+        pushed_at = datetime.fromtimestamp(int(raw), tz=timezone.utc)
+    except (ValueError, TypeError, OSError, OverflowError):
+        return False
+    age = (datetime.now(timezone.utc) - pushed_at).total_seconds()
+    return age > _DELIVERY_FRESHNESS_SECONDS
 
 
 def _make_handler(secret, on_push, path):
@@ -98,6 +152,24 @@ def _make_handler(secret, on_push, path):
         # send_response_only() otherwise bypasses.
         def version_string(self):
             return ""
+
+        # Bound every accepted connection, before a single request byte is read.
+        # ThreadingHTTPServer spawns one thread per connection with no admission
+        # control, so without a timeout a client that connects and stalls (or
+        # that declares a Content-Length and never sends it) pins one thread, one
+        # socket and up to _MAX_BODY_BYTES of buffer indefinitely -- with no
+        # credential. The timeout reclaims the thread instead.
+        def setup(self):
+            super().setup()
+            self.connection.settimeout(_READ_TIMEOUT_SECONDS)
+
+        def handle_one_request(self):
+            try:
+                super().handle_one_request()
+            except (socket.timeout, TimeoutError):
+                # A stalled request-line/header block: drop the connection that
+                # the slow client was holding open.
+                self.close_connection = True
 
         # Silence BaseHTTPRequestHandler's default stderr access logging; we log
         # through our own logger instead.
@@ -123,6 +195,34 @@ def _make_handler(secret, on_push, path):
             listener (or its path) apart from nothing at all."""
             self._reply(404, _NOT_FOUND_BODY, content_type="text/html; charset=utf-8")
 
+        def _read_body(self, length):
+            """
+            Reads exactly `length` body bytes, or returns None after replying.
+
+            The read is bounded by the per-connection timeout set in setup(), so
+            a client that declares a length and stalls cannot pin this thread
+            forever. The byte count is also verified: `rfile.read(n)` can return
+            short, and HMAC-ing a truncated buffer would treat an incomplete
+            request as complete.
+            """
+            self.connection.settimeout(_READ_TIMEOUT_SECONDS)
+            try:
+                body = self.rfile.read(length)
+            except (socket.timeout, TimeoutError, OSError):
+                logger.warning("[webhook] Dropped a stalled or interrupted request body.")
+                self.close_connection = True
+                self._not_here()
+                return None
+            if len(body) != length:
+                logger.warning(
+                    f"[webhook] Dropped a short request body ({len(body)} of "
+                    f"{length} bytes)."
+                )
+                self.close_connection = True
+                self._not_here()
+                return None
+            return body
+
         def do_POST(self):
             # Everything up to and including signature verification is a "does
             # this look like an authenticated delivery?" gate. Any failure here
@@ -141,7 +241,9 @@ def _make_handler(secret, on_push, path):
                 self._not_here()
                 return
 
-            body = self.rfile.read(length)
+            body = self._read_body(length)
+            if body is None:
+                return
 
             # Authenticate every delivery before parsing anything untrusted.
             signature = self.headers.get("X-Hub-Signature-256", "")
@@ -167,8 +269,18 @@ def _make_handler(secret, on_push, path):
 
             try:
                 payload = json.loads(body)
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                # UnicodeDecodeError is not a JSONDecodeError subclass, so a
+                # non-UTF-8 body would otherwise escape the handler.
                 logger.warning(f"[webhook] Authenticated {event} had invalid JSON.")
+                self._reply(400, b"invalid payload", content_type="text/plain; charset=utf-8")
+                return
+
+            # Every event we act on is a JSON object; anything else is not a
+            # payload we can reason about, so it is rejected rather than raising
+            # AttributeError out of the handler thread.
+            if not isinstance(payload, dict):
+                logger.warning(f"[webhook] Authenticated {event} payload was not a JSON object.")
                 self._reply(400, b"invalid payload", content_type="text/plain; charset=utf-8")
                 return
 
@@ -181,6 +293,14 @@ def _make_handler(secret, on_push, path):
                     logger.debug(f"[webhook] Ignoring pull_request action '{action}'.")
                     self._reply(204)
                     return
+
+            if event == "push" and _is_stale(payload):
+                logger.warning(
+                    f"[webhook] Ignoring stale push delivery; it exceeds the "
+                    f"freshness window."
+                )
+                self._reply(204)
+                return
 
             repo = build_repo_from_payload(payload)
             if repo is None:

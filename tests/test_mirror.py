@@ -115,10 +115,15 @@ def test_sync_one_repo_git_failure(mock_logger, mock_exists, mock_makedirs, mock
 @patch("subprocess.run")
 @patch("os.makedirs")
 @patch("os.path.exists")
-@patch("holocron.mirror.logger")
-def test_sync_one_repo_redacts_token_in_error(mock_logger, mock_exists, mock_makedirs, mock_run):
+def test_sync_one_repo_redacts_token_in_error(mock_exists, mock_makedirs, mock_run):
     # A git failure whose cmd/stderr echo the token-embedded URL must be redacted
-    # before it reaches the logs.
+    # before it reaches the logs. Asserted on the emitted stream rather than on a
+    # mocked logger, because the scrubbing is a logger filter: mocking the logger
+    # would bypass the very control under test.
+    import io
+    import logging
+    from holocron.logger import logger as real_logger
+
     repo = Repository(name='secret-repo', clone_url='https://github.com/u/r.git')
     source_provider = MagicMock()
     source_provider.get_remote_url.return_value = "https://oauth2:SECRETTOKEN@github.com/u/r.git"
@@ -132,9 +137,18 @@ def test_sync_one_repo_redacts_token_in_error(mock_logger, mock_exists, mock_mak
     )
     mock_run.side_effect = err
 
-    sync_one_repo(repo, storage_path="/tmp", source_provider=source_provider)
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(logging.Formatter("{message}", style="{"))
+    original = real_logger.handlers[:]
+    real_logger.handlers = [handler]
+    try:
+        sync_one_repo(repo, storage_path="/tmp", source_provider=source_provider)
+    finally:
+        real_logger.handlers = original
 
-    logged = mock_logger.error.call_args[0][0]
+    logged = stream.getvalue()
+    assert "ERROR syncing secret-repo" in logged
     assert "SECRETTOKEN" not in logged
     assert "***@github.com" in logged
     
@@ -152,9 +166,16 @@ def test_sync_one_repo_checkout_failure(mock_logger, mock_exists, mock_makedirs,
     # 2. checkout_dir exists (True) -> Pull
     mock_exists.return_value = True
     
-    # Fetch succeeds, Pull fails
+    # Fetch succeeds, Pull fails. Keyed on the command rather than call order so
+    # the mirror-origin check (an extra `git remote get-url`) does not shift it.
     err = subprocess.CalledProcessError(1, ["git", "pull"], stderr=b"Merge conflict")
-    mock_run.side_effect = [None, err]  # 1st call (fetch), 2nd call (pull)
+
+    def _run(cmd, *args, **kwargs):
+        if "pull" in cmd:
+            raise err
+        return MagicMock(stdout=b"url")
+
+    mock_run.side_effect = _run
 
     sync_one_repo(repo, storage_path="/tmp", backup_only=True, checkout=True, source_provider=source_provider)
     
@@ -263,3 +284,149 @@ def test_sync_one_repo_refuses_path_traversal_name(mock_logger, mock_makedirs, m
 
     mock_run.assert_not_called()
     assert mock_logger.error.called
+
+
+# --- Mirror identity: distinct repositories must not share a mirror ---
+
+def test_mirror_dir_is_distinct_for_same_slug_under_different_owners():
+    from holocron.utils import mirror_dir
+
+    a = mirror_dir("/storage", Repository(name="shared", clone_url="u", full_name="ownerA/shared"))
+    b = mirror_dir("/storage", Repository(name="shared", clone_url="u", full_name="ownerB/shared"))
+    assert a != b
+    assert a == "/storage/ownerA/shared.git"
+    assert b == "/storage/ownerB/shared.git"
+
+
+def test_mirror_dir_falls_back_to_bare_slug():
+    from holocron.utils import mirror_dir
+
+    assert mirror_dir("/storage", Repository(name="solo", clone_url="u")) == "/storage/solo.git"
+
+
+@patch("subprocess.run")
+@patch("os.makedirs")
+@patch("os.path.exists")
+@patch("holocron.mirror.logger")
+def test_sync_one_repo_refuses_unsafe_full_name(mock_logger, mock_exists, mock_makedirs, mock_run):
+    """`full_name` also becomes a path component, so it is validated too."""
+    repo = Repository(name="r", clone_url="https://github.com/o/r.git", full_name="../escape")
+    source_provider = MagicMock()
+
+    sync_one_repo(repo, storage_path="/tmp/mirror", backup_only=True, source_provider=source_provider)
+
+    mock_run.assert_not_called()
+    assert mock_logger.error.called
+
+
+@patch("subprocess.run")
+@patch("os.makedirs")
+@patch("os.path.exists")
+@patch("holocron.mirror.logger")
+def test_ensure_local_mirror_repoints_mismatched_origin(mock_logger, mock_exists, mock_makedirs, mock_run):
+    """A mirror whose recorded origin is another repository is re-pointed.
+
+    Fetching the recorded origin blindly is what let one project's content reach
+    another project's destination, silently and with a zero exit status.
+    """
+    repo = Repository(name="r", clone_url="https://github.com/o/r.git", full_name="o/r")
+    source_provider = MagicMock()
+    source_provider.get_remote_url.return_value = (
+        "https://oauth2:TOKEN@github.com/o/r.git"
+    )
+
+    # Mirror exists; `git remote get-url origin` reports a *different* upstream.
+    mock_exists.return_value = True
+    mock_run.return_value = MagicMock(
+        stdout=b"https://oauth2:OTHER@github.com/other-owner/r.git\n"
+    )
+
+    sync_one_repo(repo, storage_path="/tmp/mirror", backup_only=True, source_provider=source_provider)
+
+    cmds = [call[0][0] for call in mock_run.call_args_list]
+    set_url = [c for c in cmds if "set-url" in c and "origin" in c]
+    assert set_url, cmds
+    assert "https://oauth2:TOKEN@github.com/o/r.git" in set_url[0]
+    assert any("fetch" in c for c in cmds)
+    # The mismatch is reported, not silent -- and without leaking either token.
+    warnings = " ".join(str(c) for c in mock_logger.warning.call_args_list)
+    assert "does not match" in warnings
+    assert "TOKEN" not in warnings and "OTHER" not in warnings
+
+
+@patch("subprocess.run")
+@patch("os.makedirs")
+@patch("os.path.exists")
+@patch("holocron.mirror.logger")
+def test_ensure_local_mirror_keeps_matching_origin(mock_logger, mock_exists, mock_makedirs, mock_run):
+    repo = Repository(name="r", clone_url="https://github.com/o/r.git", full_name="o/r")
+    source_provider = MagicMock()
+    source_provider.get_remote_url.return_value = "https://oauth2:TOKEN@github.com/o/r.git"
+
+    mock_exists.return_value = True
+    mock_run.return_value = MagicMock(stdout=b"https://oauth2:TOKEN@github.com/o/r.git\n")
+
+    sync_one_repo(repo, storage_path="/tmp/mirror", backup_only=True, source_provider=source_provider)
+
+    cmds = [call[0][0] for call in mock_run.call_args_list]
+    assert not [c for c in cmds if "set-url" in c], cmds
+    assert any("fetch" in c for c in cmds)
+
+
+# --- Checkout paths: one-to-one with mirrors ---
+
+def test_checkout_dir_strips_only_the_trailing_suffix():
+    from holocron.utils import checkout_dir_for
+
+    # Distinct valid names must not collapse onto one working tree.
+    assert checkout_dir_for("/s/x.git") == "/s/x"
+    assert checkout_dir_for("/s/x.git.git") == "/s/x.git"
+    assert checkout_dir_for("/s/x.gitex.git") == "/s/x.gitex"
+    # A path with no trailing suffix is left alone rather than rewritten.
+    assert checkout_dir_for("/s/x.gitex") == "/s/x.gitex"
+
+
+def test_repo_named_dot_git_is_rejected():
+    """`.git` would make the checkout resolve onto the storage root itself."""
+    assert is_safe_repo_name(".git") is False
+    assert is_safe_repo_name(".GIT") is False
+    assert is_safe_repo_name(".github") is True
+
+
+@patch("subprocess.run")
+@patch("os.makedirs")
+@patch("os.path.exists")
+@patch("holocron.mirror.logger")
+def test_checkout_never_resolves_to_storage_root(mock_logger, mock_exists, mock_makedirs, mock_run):
+    repo = Repository(name=".git", clone_url="https://github.com/o/r.git")
+    source_provider = MagicMock()
+
+    sync_one_repo(repo, storage_path="/tmp/mirror", backup_only=True, checkout=True,
+                  source_provider=source_provider)
+
+    mock_run.assert_not_called()
+    assert mock_logger.error.called
+
+
+# --- Dry-run must not log the destination credential ---
+
+@patch("subprocess.run")
+@patch("os.makedirs")
+@patch("os.path.exists")
+@patch("holocron.mirror.logger")
+def test_dry_run_does_not_log_destination_token(mock_logger, mock_exists, mock_makedirs, mock_run):
+    repo = Repository(name="dry-repo", clone_url="https://github.com/u/dry-repo.git")
+    source_provider = MagicMock()
+    source_provider.get_remote_url.return_value = "https://oauth2:SOURCESECRET@github.com/u/dry-repo.git"
+    destination_provider = MagicMock()
+    destination_provider.get_remote_url.return_value = (
+        "https://oauth2:DESTTOKEN@gitlab.acme-corp.example/acme/dry-repo.git"
+    )
+
+    sync_one_repo(repo, storage_path="/tmp", dry_run=True,
+                  source_provider=source_provider, destination_provider=destination_provider)
+
+    mock_run.assert_not_called()
+    logged = " ".join(str(c) for c in mock_logger.info.call_args_list)
+    assert "DESTTOKEN" not in logged
+    assert "***@gitlab.acme-corp.example" in logged

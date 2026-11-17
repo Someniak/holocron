@@ -122,7 +122,10 @@ jobs:
         run: uv build
 
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+        # Pinned to the commit of tag v1.14.3, not the mutable `release/v1`
+        # branch: this job holds PyPI's trusted-publishing identity, so whoever
+        # can move the ref the action runs from can substitute the upload path.
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
 
   docker-publish:
     name: Publish Docker Image

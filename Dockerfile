@@ -22,12 +22,18 @@ COPY --from=uv /uv /uvx /bin/
 
 # Re-declare the global ARGs so they are in scope below.
 ARG UV_INDEX_URL
-# Lock mode for `uv sync`. Public builds keep `--frozen` to install the exact
-# pinned versions from uv.lock (whose URLs point at public PyPI). The GitLab
-# build overrides this to empty so uv resolves through the ProGet mirror
-# (UV_DEFAULT_INDEX) instead of replaying uv.lock's unreachable pythonhosted
-# URLs -- matching how the CI test job already resolves.
-ARG UV_LOCK_MODE=--frozen
+# Lock mode for `uv sync`.
+#
+# `--locked` asserts that uv.lock is still consistent with pyproject.toml and
+# installs exactly the versions and hashes it records; it errors rather than
+# silently re-resolving. That guarantee must not be weakened for the internal
+# build: `--frozen` installs the lock's recorded artifact URLs verbatim, which an
+# egress-restricted mirror cannot serve, and dropping the flag altogether makes
+# uv re-resolve live against whatever index it is pointed at -- which would leave
+# the published image's dependencies unpinned and unverified. A mirror configured
+# as a proxying repository re-serves the same artifact URLs the lock records, so
+# `--locked` works on both build paths. Do not override this with an empty value.
+ARG UV_LOCK_MODE=--locked
 
 # Use the base image's interpreter; never download a managed Python.
 # UV_DEFAULT_INDEX points uv at the PyPI index (public by default; the ProGet
@@ -62,16 +68,24 @@ FROM ${PYTHON_IMAGE}
 # apk's repository is parameterized for the same reason as the base images and
 # PyPI index above: the egress-restricted GitLab/Kaniko runners cannot reach the
 # public Alpine CDN. When APK_REPO_URL is set (the GitLab build) it points at the
-# ProGet Alpine feed, which serves ONE merged index at <feed>/<arch>/APKINDEX.tar.gz
-# (all branches/sections flattened) -- so the repositories file becomes that single
-# base URL, with NO vX.Y/main split, and the install uses --allow-untrusted because
-# ProGet's merged index is not signed by Alpine's built-in keys. The empty default
-# (public GitHub Actions build / plain `docker build`) leaves the base image's own
-# Alpine CDN repositories untouched.
+# internal Alpine feed.
+#
+# Signature verification is NOT disabled for that feed. `--allow-untrusted`
+# would accept an unsigned or wrongly-signed index and any package served from
+# it, so a substituted `git` would run on every clone/fetch/push inside the
+# process holding the mirroring tokens, and a substituted `openssl` would mint
+# the listener's certificate. An internal mirror is expected to proxy the
+# upstream index, whose .SIGN.RSA member verifies against the Alpine keys this
+# base image already ships in /etc/apk/keys. If a feed instead re-signs its own
+# index, trust that key explicitly by copying its public half into
+# /etc/apk/keys/ as a build step before this RUN; do not reintroduce
+# --allow-untrusted. There is deliberately no unsigned fallback: if the feed
+# cannot satisfy either, the build must fail rather than publish unverified
+# binaries.
 ARG APK_REPO_URL=
 RUN if [ -n "$APK_REPO_URL" ]; then \
         echo "${APK_REPO_URL}/" > /etc/apk/repositories \
-        && apk add --no-cache --allow-untrusted git openssl; \
+        && apk add --no-cache git openssl; \
     else \
         apk add --no-cache git openssl; \
     fi

@@ -81,3 +81,65 @@ def test_github_prepare_push_not_protected(mock_put, mock_get, repo):
     provider.prepare_push(repo)
     
     mock_put.assert_not_called()
+
+
+def test_prepare_push_addresses_repository_by_owner_repo_and_id():
+    """`repo.name` is a bare slug on every producer; /repos/{slug} always 404s.
+
+    The relaxation must look the repository up by its fully-qualified name and
+    then address it by numeric id, so it actually executes.
+    """
+    repo = Repository(name="repo", clone_url="url", full_name="acme/repo")
+    provider = GitHubProvider("token")
+
+    repo_resp = MagicMock()
+    repo_resp.status_code = 200
+    repo_resp.json.return_value = {"id": 4242, "default_branch": "main"}
+
+    prot_resp = MagicMock()
+    prot_resp.status_code = 200
+    prot_resp.json.return_value = {"allow_force_pushes": {"enabled": False}}
+
+    put_resp = MagicMock()
+    put_resp.status_code = 200
+
+    with patch("requests.get", side_effect=[repo_resp, prot_resp]) as mock_get, \
+         patch("requests.put", return_value=put_resp) as mock_put:
+        provider.prepare_push(repo)
+
+    lookup_url = mock_get.call_args_list[0][0][0]
+    assert lookup_url.endswith("/repos/acme/repo")
+
+    put_url = mock_put.call_args[0][0]
+    assert "/repos/4242/branches/main/protection" in put_url
+    assert mock_put.call_args[1]["json"]["allow_force_pushes"] is True
+
+
+def test_prepare_push_skips_names_that_are_not_owner_repo():
+    """A payload-supplied name with an extra separator must not steer the path."""
+    repo = Repository(name="repo", clone_url="url", full_name="acme/extra/repo")
+    provider = GitHubProvider("token")
+
+    with patch("requests.get") as mock_get:
+        provider.prepare_push(repo)
+
+    mock_get.assert_not_called()
+
+
+def test_prepare_push_warns_when_destination_repo_missing(caplog):
+    """A silent 404 is what hid the never-executing relaxation."""
+    import logging
+    from holocron.providers.github import logger as gh_logger
+
+    repo = Repository(name="repo", clone_url="url", full_name="acme/repo")
+    provider = GitHubProvider("token")
+
+    repo_resp = MagicMock()
+    repo_resp.status_code = 404
+
+    with patch("requests.get", return_value=repo_resp), \
+         patch.object(gh_logger, "warning") as mock_warning:
+        provider.prepare_push(repo)
+
+    mock_warning.assert_called()
+    assert "branch protection was not inspected" in mock_warning.call_args[0][0]
