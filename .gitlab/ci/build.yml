@@ -48,16 +48,22 @@
   # uses) only here. Verify the python path resolves against your feed's docker.io
   # connector -- some ProGet setups omit the `library/` segment.
   variables:
-    # UV_LOCK_MODE="" drops --frozen so uv resolves through the ProGet mirror
-    # (UV_DEFAULT_INDEX) rather than replaying uv.lock's public-PyPI URLs, which
-    # the egress-restricted runners cannot reach.
+    # UV_LOCK_MODE is left at the Dockerfile default (`--locked`) on purpose. Do
+    # not blank it: that makes uv re-resolve dependencies live against the mirror,
+    # so the published image's Python packages would no longer be hash-pinned by
+    # uv.lock and a compromised or misconfigured mirror could substitute code into
+    # a release artifact. `--locked` keeps the lock authoritative and only needs
+    # the mirror to re-serve the artifact URLs the lock already records, which a
+    # proxying (remote) repository does.
     # APK_REPO_URL routes the runtime stage's `apk add git openssl` through the
-    # ProGet Alpine feed; without it apk hits the public Alpine CDN, which the
-    # egress-restricted runners cannot reach. ProGet serves a single merged apk
-    # index at <feed>/<arch>/APKINDEX.tar.gz, so this is the feed base only -- the
-    # Dockerfile writes it verbatim (with a trailing slash) as the sole repository
-    # and installs --allow-untrusted (ProGet's index is not Alpine-key-signed).
-    KANIKO_BASE_ARGS: "--build-arg PYTHON_IMAGE=artifactory.aparty.blue-yard.be/containers/library/python:3.14-alpine --build-arg UV_IMAGE=artifactory.aparty.blue-yard.be/containers/astral-sh/uv:0.10.10 --build-arg UV_INDEX_URL=https://artifactory.aparty.blue-yard.be/pypi/pypi/simple/ --build-arg UV_LOCK_MODE= --build-arg APK_REPO_URL=https://artifactory.aparty.blue-yard.be/apk/alpine"
+    # internal Alpine feed; without it apk hits the public Alpine CDN, which the
+    # egress-restricted runners cannot reach. apk's signature verification stays
+    # ON: the feed must proxy the signed upstream index (which verifies against
+    # the Alpine keys the base image ships). If the feed re-signs its own index,
+    # add its public key to /etc/apk/keys in the Dockerfile rather than reaching
+    # for --allow-untrusted -- a substituted git/openssl would run inside the
+    # published image.
+    KANIKO_BASE_ARGS: "--build-arg PYTHON_IMAGE=artifactory.aparty.blue-yard.be/containers/library/python:3.14-alpine --build-arg UV_IMAGE=artifactory.aparty.blue-yard.be/containers/astral-sh/uv:0.10.10 --build-arg UV_INDEX_URL=https://artifactory.aparty.blue-yard.be/pypi/pypi/simple/ --build-arg APK_REPO_URL=https://artifactory.aparty.blue-yard.be/apk/alpine"
   image:
     # Pulled via ProGet (artifactory.aparty.blue-yard.be), which proxies and
     # caches gcr.io/kaniko-project/executor on first request.

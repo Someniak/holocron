@@ -135,7 +135,7 @@ Holocron uses environment variables for secrets:
 | `--backup-only` | False | Mirror locally only, do not push to GitLab |
 | `--checkout` | False | Create a visible working directory alongside the mirror |
 | `--concurrency` | 5 | Number of parallel sync threads |
-| `--storage` | `./mirror-data` | Directory to store repositories |
+| `--storage` | `./mirror-data` | Directory to store repositories. Each mirror is stored at `<storage>/<owner>/<repo>.git` |
 | `--dry-run` | False | Print what would happen without doing it |
 | `--verbose` | False | Enable detailed debug logging |
 | `--webhook` | False | Start an HTTP listener that syncs a repo on GitHub `push` events |

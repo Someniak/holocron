@@ -109,3 +109,59 @@ def test_prepare_push_project_not_found(mock_patch, mock_get, repo):
     
     mock_get.assert_called_once()
     mock_patch.assert_not_called()
+
+
+def test_to_repository_captures_path_with_namespace():
+    """GitLab sources must carry full_name so same-slug projects stay separate."""
+    provider = GitLabProvider("http://gitlab.com", "token")
+    repo = provider._to_repository({
+        "id": 1,
+        "path": "repo",
+        "path_with_namespace": "acme/repo",
+        "http_url_to_repo": "http://gitlab.com/acme/repo.git",
+    })
+    assert repo.name == "repo"
+    assert repo.full_name == "acme/repo"
+
+
+@patch("requests.get")
+def test_get_all_pages_stops_on_empty_next_page_header(mock_get):
+    resp = MagicMock()
+    resp.json.return_value = [{"id": i} for i in range(100)]
+    resp.raise_for_status.return_value = None
+    resp.headers = {"X-Next-Page": ""}
+    mock_get.return_value = resp
+
+    provider = GitLabProvider("http://gitlab.com", "token")
+    items = provider._get_all_pages("http://api/projects", {}, "projects")
+    assert len(items) == 100
+    assert mock_get.call_count == 1
+
+
+@patch("requests.get")
+def test_get_all_pages_terminates_on_repeated_page(mock_get):
+    resp = MagicMock()
+    resp.json.return_value = [{"id": i} for i in range(100)]
+    resp.raise_for_status.return_value = None
+    resp.headers = {"X-Next-Page": "2"}
+    mock_get.return_value = resp
+
+    provider = GitLabProvider("http://gitlab.com", "token")
+    import pytest
+    with pytest.raises(RuntimeError, match="no new items"):
+        provider._get_all_pages("http://api/projects", {}, "projects")
+    assert mock_get.call_count == 2
+
+
+@patch("requests.get")
+def test_get_all_pages_rejects_non_list_body(mock_get):
+    resp = MagicMock()
+    resp.json.return_value = {"message": "401 Unauthorized"}
+    resp.raise_for_status.return_value = None
+    resp.headers = {}
+    mock_get.return_value = resp
+
+    provider = GitLabProvider("http://gitlab.com", "token")
+    import pytest
+    with pytest.raises(RuntimeError, match="expected a JSON list"):
+        provider._get_all_pages("http://api/projects", {}, "projects")

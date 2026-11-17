@@ -2,6 +2,7 @@
 import os
 import ssl
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -10,10 +11,15 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from .config import parse_args, validate_config, GITLAB_API_URL, GITHUB_API_URL
 from .logger import setup_logger, logger, log_execution
 from .mirror import needs_sync, sync_one_repo
-from .utils import handle_credits, print_storage_estimate
+from .utils import handle_credits, mirror_dir, print_storage_estimate, repository_key
 from .providers.gitlab import GitLabProvider
 from .providers.github import GitHubProvider
 from .webhook import start_webhook_server
+
+# Cap on webhook-triggered syncs pending at once. The pool's own queue is
+# unbounded, so without this an accepted delivery burst becomes an unbounded
+# backlog of clone jobs and a legitimate repository is starved behind it.
+_WEBHOOK_MAX_PENDING = 256
 
 @log_execution
 def run_sync_cycle(config: dict, source_provider, destination_provider, synced_pushes):
@@ -45,12 +51,13 @@ def run_sync_cycle(config: dict, source_provider, destination_provider, synced_p
         for repo in repos:
             repo_name = repo.name
             pushed_at = repo.pushed_at
-            repo_dir = os.path.join(storage, f"{repo_name}.git")
+            repo_dir = mirror_dir(storage, repo)
+            key = repository_key(repo)
 
             # Smart filtering
             if watch:
                 # 1. Skip if already synced this exact push
-                if repo_name in synced_pushes and synced_pushes[repo_name] == pushed_at:
+                if key in synced_pushes and synced_pushes[key] == pushed_at:
                     continue
                 
                 # 2. Check time window (SKIP if old AND local repo exists)
@@ -76,7 +83,7 @@ def run_sync_cycle(config: dict, source_provider, destination_provider, synced_p
                 future.result()
                 sync_count += 1
                 if repo.pushed_at:
-                    synced_pushes[repo.name] = repo.pushed_at
+                    synced_pushes[repository_key(repo)] = repo.pushed_at
             except Exception as exc:
                 logger.error(f"[{repo.name}] generated an exception: {exc}")
     
@@ -100,23 +107,60 @@ def start_webhook_listener(config, source_provider, destination_provider, synced
     # per-cycle pool). Per-repo locking in sync_one_repo keeps the two in step.
     executor = ThreadPoolExecutor(max_workers=config['concurrency'], thread_name_prefix="webhook-sync")
 
+    # Repositories with a queued or running sync. A delivery for a repository
+    # that already has one pending changes nothing, because sync_one_repo
+    # re-reads the remote when it runs -- so the second copy is dropped rather
+    # than queued behind the first.
+    pending = set()
+    pending_guard = threading.Lock()
+
     def on_push(repo):
-        future = executor.submit(
-            sync_one_repo,
-            repo=repo,
-            storage_path=config['storage'],
-            dry_run=config['dry_run'],
-            backup_only=config['backup_only'],
-            checkout=config['checkout'],
-            source_provider=source_provider,
-            destination_provider=destination_provider,
-        )
+        key = repository_key(repo)
+        # Admission control happens here, on the HTTP handler thread, so the
+        # handler can reply without waiting for a worker. Overflow is dropped
+        # rather than answered with 503: the reply is already sent, and a 503
+        # would tell the forge the delivery failed and trigger a retry loop that
+        # reintroduces the flood.
+        with pending_guard:
+            if key in pending:
+                logger.debug(f"[{repo.name}] Coalesced webhook delivery; a sync is already pending.")
+                return
+            if len(pending) >= _WEBHOOK_MAX_PENDING:
+                logger.warning(
+                    f"[{repo.name}] Dropped webhook delivery: {_WEBHOOK_MAX_PENDING} "
+                    f"syncs already pending."
+                )
+                return
+            pending.add(key)
+
+        try:
+            future = executor.submit(
+                sync_one_repo,
+                repo=repo,
+                storage_path=config['storage'],
+                dry_run=config['dry_run'],
+                backup_only=config['backup_only'],
+                checkout=config['checkout'],
+                source_provider=source_provider,
+                destination_provider=destination_provider,
+            )
+        except RuntimeError as exc:
+            # The pool refused the work (e.g. shut down). Release the slot so the
+            # repository is not permanently suppressed.
+            with pending_guard:
+                pending.discard(key)
+            logger.error(f"[{repo.name}] Could not queue webhook-triggered sync: {exc}")
+            return
 
         def _done(fut):
+            # Always retire the pending entry, even when the job raised, so
+            # sequential pushes to the same repository are never suppressed.
+            with pending_guard:
+                pending.discard(key)
             try:
                 fut.result()
                 if repo.pushed_at:
-                    synced_pushes[repo.name] = repo.pushed_at
+                    synced_pushes[key] = repo.pushed_at
                 logger.info(f"[{repo.name}] Webhook-triggered sync complete.")
             except Exception as exc:
                 logger.error(f"[{repo.name}] Webhook-triggered sync failed: {exc}")

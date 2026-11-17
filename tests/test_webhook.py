@@ -4,6 +4,7 @@ import time
 import hmac
 import json
 import shutil
+import socket
 import hashlib
 import subprocess
 from datetime import datetime, timezone
@@ -382,3 +383,312 @@ def test_https_delivery_returns_202(self_signed_cert):
     finally:
         srv.shutdown()
         srv.server_close()
+
+
+# --- Malformed but correctly signed payloads must not drop the connection ---
+
+def _post_signed(base, payload_bytes, event="push"):
+    return requests.post(
+        f"{base}/webhook",
+        data=payload_bytes,
+        headers={"X-GitHub-Event": event, "X-Hub-Signature-256": sign(SECRET, payload_bytes)},
+        timeout=5,
+    )
+
+
+@pytest.mark.parametrize("body", [b"[]", b'"str"', b"42", b"null", b"[1,2,3]"])
+def test_signed_non_object_payload_gets_400(server, body):
+    """A JSON array/string/number/null body is valid JSON but not a payload."""
+    base, received = server
+    r = _post_signed(base, body)
+    assert r.status_code == 400
+    assert received == []
+
+
+@pytest.mark.parametrize("repository", ["scalar", 7, ["a"], None])
+def test_signed_non_dict_repository_gets_400(server, repository):
+    base, received = server
+    body = json.dumps({"repository": repository}).encode()
+    r = _post_signed(base, body)
+    assert r.status_code == 400
+    assert received == []
+
+
+@pytest.mark.parametrize("action_holder", [[], "x", 5])
+def test_pull_request_with_non_object_payload_gets_400(server, action_holder):
+    base, received = server
+    body = json.dumps(action_holder).encode()
+    r = _post_signed(base, body, event="pull_request")
+    assert r.status_code == 400
+    assert received == []
+
+
+def test_signed_out_of_range_pushed_at_does_not_crash(server):
+    """An OverflowError from the timestamp conversion must not drop the socket."""
+    base, received = server
+    body = json.dumps({
+        "repository": {
+            "name": "hook-repo",
+            "clone_url": "https://github.com/u/hook-repo.git",
+            "pushed_at": 10 ** 30,
+        }
+    }).encode()
+    r = _post_signed(base, body)
+    assert r.status_code == 202
+    assert len(received) == 1
+    assert received[0].pushed_at is not None
+
+
+def test_signed_non_utf8_body_gets_400(server):
+    """UnicodeDecodeError is not a JSONDecodeError; it must still answer."""
+    base, received = server
+    body = b'{"repository": "\xff\xfe"}'
+    r = _post_signed(base, body)
+    assert r.status_code == 400
+    assert received == []
+
+
+def test_stale_delivery_is_not_synced(server):
+    """A replayed, long-stale signed delivery must not queue a sync."""
+    base, received = server
+    body = json.dumps({
+        "repository": {
+            "name": "hook-repo",
+            "clone_url": "https://github.com/u/hook-repo.git",
+            "pushed_at": 1,  # 1970
+        }
+    }).encode()
+    r = _post_signed(base, body)
+    assert r.status_code == 204
+    assert received == []
+
+
+# --- Admission control on the read path ---
+
+def test_stalled_body_is_dropped_within_the_read_timeout():
+    """An unauthenticated client cannot pin a handler thread indefinitely.
+
+    Declares a large Content-Length, sends a few bytes, then stalls. The read
+    must time out and the connection must be reclaimed.
+    """
+    from holocron import webhook as webhook_module
+
+    received = []
+    srv = start_webhook_server(
+        port=0, secret=SECRET, on_push=received.append,
+        path="/webhook", host="127.0.0.1",
+    )
+    port = srv.server_address[1]
+    original = webhook_module._READ_TIMEOUT_SECONDS
+    webhook_module._READ_TIMEOUT_SECONDS = 0.5
+    try:
+        sock = socket.create_connection(("127.0.0.1", port), timeout=5)
+        sock.sendall(
+            b"POST /webhook HTTP/1.1\r\nHost: h\r\n"
+            b"Content-Length: 100000\r\n\r\nAAAAAAAAAA"
+        )
+        # The server must answer (or close) rather than hang forever.
+        sock.settimeout(10)
+        deadline = time.monotonic() + 10
+        got_data = False
+        while time.monotonic() < deadline and not got_data:
+            try:
+                chunk = sock.recv(4096)
+            except socket.timeout:
+                break
+            if chunk:
+                got_data = True
+        assert got_data, "listener never responded to a stalled body"
+        sock.close()
+        assert received == []
+    finally:
+        webhook_module._READ_TIMEOUT_SECONDS = original
+        srv.shutdown()
+        srv.server_close()
+
+
+def test_short_body_is_rejected_not_hmaced(monkeypatch):
+    """A truncated body must be refused rather than verified as if complete."""
+    import holocron.webhook as webhook_module
+
+    monkeypatch.setattr(webhook_module, "_READ_TIMEOUT_SECONDS", 0.5)
+    received = []
+    srv = start_webhook_server(
+        port=0, secret=SECRET, on_push=received.append,
+        path="/webhook", host="127.0.0.1",
+    )
+    port = srv.server_address[1]
+    try:
+        body = _push_body()
+        truncated = body[:5]
+        sock = socket.create_connection(("127.0.0.1", port), timeout=5)
+        # Claim the full length, deliver only part of it, then half-close so the
+        # read returns short instead of blocking.
+        sock.sendall(
+            b"POST /webhook HTTP/1.1\r\nHost: h\r\n"
+            b"X-GitHub-Event: push\r\n"
+            + f"Content-Length: {len(body)}\r\n\r\n".encode()
+            + truncated
+        )
+        sock.shutdown(socket.SHUT_WR)
+        sock.settimeout(10)
+        data = b""
+        try:
+            while True:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                data += chunk
+        except socket.timeout:
+            pass
+        sock.close()
+        assert b" 202 " not in data and b" 200 " not in data
+        assert received == []
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+# --- Admission control on the submission path (unbounded queue / starvation) ---
+
+def _listener_config(**overrides):
+    config = {
+        "concurrency": 1,
+        "storage": "/tmp/holo-test",
+        "dry_run": False,
+        "backup_only": False,
+        "checkout": False,
+        "webhook_port": 0,
+        "webhook_path": "/webhook",
+    }
+    config.update(overrides)
+    return config
+
+
+def _deliver(port, name="hook-repo", pushed_at=None):
+    repo = {
+        "name": name,
+        "clone_url": f"https://github.com/u/{name}.git",
+        "full_name": f"u/{name}",
+    }
+    if pushed_at is not None:
+        repo["pushed_at"] = pushed_at
+    body = json.dumps({"repository": repo}).encode()
+    return requests.post(
+        f"http://127.0.0.1:{port}/webhook",
+        data=body,
+        headers={"X-GitHub-Event": "push", "X-Hub-Signature-256": sign(SECRET, body)},
+        timeout=5,
+    )
+
+
+@patch("holocron.__main__.sync_one_repo")
+def test_repeated_deliveries_for_one_repo_are_coalesced(mock_sync):
+    """A burst for one repository must not fill the queue and starve others."""
+    import threading
+
+    release = threading.Event()
+    started = threading.Event()
+
+    def _blocking_sync(**kwargs):
+        started.set()
+        release.wait(10)
+
+    mock_sync.side_effect = _blocking_sync
+
+    with patch.dict(os.environ, {"HOLOCRON_WEBHOOK_SECRET": SECRET}):
+        server = start_webhook_listener(_listener_config(), MagicMock(), MagicMock(), {})
+    try:
+        port = server.server_address[1]
+        assert _deliver(port).status_code == 202
+        assert started.wait(5), "first sync never started"
+
+        # While one sync for this repo is in flight, further deliveries for the
+        # same repo are acknowledged but must not queue more work.
+        for _ in range(20):
+            assert _deliver(port).status_code == 202
+
+        time.sleep(0.2)
+        assert mock_sync.call_count == 1
+
+        # A different repository is still served, i.e. it was not starved.
+        mock_sync.side_effect = None
+        release.set()
+        time.sleep(0.2)
+        assert _deliver(port, name="other-repo").status_code == 202
+        assert _wait_for(lambda: mock_sync.call_count == 2)
+    finally:
+        release.set()
+        server.shutdown()
+        server.server_close()
+
+
+@patch("holocron.__main__.sync_one_repo")
+def test_sequential_deliveries_all_sync(mock_sync):
+    """Coalescing must not permanently suppress later pushes to one repo."""
+    with patch.dict(os.environ, {"HOLOCRON_WEBHOOK_SECRET": SECRET}):
+        server = start_webhook_listener(_listener_config(), MagicMock(), MagicMock(), {})
+    try:
+        port = server.server_address[1]
+        now = int(time.time())
+        for i in range(3):
+            # Fresh timestamps: the listener drops deliveries outside its window.
+            assert _deliver(port, pushed_at=now + i).status_code == 202
+            assert _wait_for(lambda n=i + 1: mock_sync.call_count == n), mock_sync.call_count
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+@patch("holocron.__main__.sync_one_repo")
+def test_pending_queue_is_bounded_and_overflow_is_dropped(mock_sync):
+    """The pending set is capped; overflow is dropped, never queued unbounded."""
+    import threading
+    import holocron.__main__ as main_module
+
+    release = threading.Event()
+
+    def _blocking_sync(**kwargs):
+        release.wait(10)
+
+    mock_sync.side_effect = _blocking_sync
+
+    with patch.dict(os.environ, {"HOLOCRON_WEBHOOK_SECRET": SECRET}), \
+         patch.object(main_module, "_WEBHOOK_MAX_PENDING", 3):
+        server = start_webhook_listener(
+            _listener_config(concurrency=1), MagicMock(), MagicMock(), {}
+        )
+    try:
+        port = server.server_address[1]
+        for i in range(10):
+            # Every delivery is still accepted by the listener (no 503, which
+            # would make the forge retry and reintroduce the flood) ...
+            assert _deliver(port, name=f"repo-{i}").status_code == 202
+        time.sleep(0.3)
+        # ... but only the cap plus the running job ever reached the pool.
+        assert mock_sync.call_count <= 4, mock_sync.call_count
+    finally:
+        release.set()
+        server.shutdown()
+        server.server_close()
+
+
+@patch("holocron.__main__.sync_one_repo")
+def test_unsigned_delivery_still_creates_no_work(mock_sync):
+    with patch.dict(os.environ, {"HOLOCRON_WEBHOOK_SECRET": SECRET}):
+        server = start_webhook_listener(_listener_config(), MagicMock(), MagicMock(), {})
+    try:
+        port = server.server_address[1]
+        body = _push_body()
+        r = requests.post(
+            f"http://127.0.0.1:{port}/webhook",
+            data=body,
+            headers={"X-GitHub-Event": "push", "X-Hub-Signature-256": sign("wrong", body)},
+            timeout=5,
+        )
+        assert r.status_code == 404
+        time.sleep(0.2)
+        mock_sync.assert_not_called()
+    finally:
+        server.shutdown()
+        server.server_close()

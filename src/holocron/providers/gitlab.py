@@ -3,6 +3,11 @@ from datetime import datetime
 from ..logger import logger, log_execution
 from .base import Provider, Repository
 
+# Hard ceiling on paginated listing requests. Real accounts have orders of
+# magnitude fewer pages (100 items/page), so hitting this means the endpoint is
+# not honouring `page` -- abort loudly instead of looping until memory is gone.
+_MAX_PAGES = 1000
+
 class GitLabProvider(Provider):
     def __init__(self, api_url, token, namespace=None, provision_status_var=False):
         self.api_url = api_url
@@ -209,7 +214,11 @@ class GitLabProvider(Provider):
             name=item['path'], # Use path (slug) as name
             clone_url=item['http_url_to_repo'],
             size=0, # Simple objects might not have stats, default to 0
-            pushed_at=pushed_at
+            pushed_at=pushed_at,
+            # GitLab exposes `path_with_namespace` ("group/repo"); keeping it
+            # gives GitLab-sourced repositories the same slug-collision
+            # isolation the GitHub source already gets.
+            full_name=item.get('path_with_namespace'),
         )
 
     def _get_all_pages(self, base_url, headers, context_name, query_params=None):
@@ -220,10 +229,19 @@ class GitLabProvider(Provider):
         items = []
         page = 1
         query_params['per_page'] = 100
+        seen_ids = set()
         
         logger.debug(f"Fetching {context_name}...")
         
         while True:
+            if page > _MAX_PAGES:
+                # The endpoint keeps returning a full page, so `page` is being
+                # ignored (or the result set is absurd). Stop loudly rather than
+                # growing the list until the process is killed.
+                raise RuntimeError(
+                    f"Incomplete fetch of {context_name}: exceeded {_MAX_PAGES} "
+                    f"pages; the endpoint is not terminating pagination"
+                )
             try:
                 query_params['page'] = page
                 
@@ -233,13 +251,41 @@ class GitLabProvider(Provider):
                 r.raise_for_status()
                 
                 data = r.json()
+                if not isinstance(data, list):
+                    # A dict/scalar body would otherwise surface as a confusing
+                    # TypeError from the caller's item['id'] access.
+                    raise RuntimeError(
+                        f"expected a JSON list for {context_name}, got "
+                        f"{type(data).__name__}"
+                    )
                 if not data:
                     break
                 
                 count = len(data)
+
+                # A page that introduces no new identifier means `page` is not
+                # being honoured: continuing would loop forever.
+                new_ids = {item['id'] for item in data if item['id'] not in seen_ids}
+                if not new_ids:
+                    raise RuntimeError(
+                        f"Incomplete fetch of {context_name}: page {page} returned "
+                        f"no new items; the endpoint is not honouring pagination"
+                    )
+                seen_ids |= new_ids
+
                 items.extend(data)
-                
-                # Check for pagination headers usually, but length check is robust enough for simple cases
+
+                # Authoritative signal when present: GitLab returns an empty
+                # X-Next-Page header on the last page.
+                response_headers = getattr(r, "headers", None)
+                next_page = (
+                    response_headers.get("X-Next-Page")
+                    if response_headers is not None and hasattr(response_headers, "get")
+                    else None
+                )
+                if next_page is not None and isinstance(next_page, str) and not next_page.strip():
+                    break
+
                 if count < query_params['per_page']:
                      break
 

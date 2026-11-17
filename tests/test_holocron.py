@@ -276,3 +276,52 @@ def test_run_sync_cycle_survives_fetch_failure(mock_logger):
     mock_logger.error.assert_called()
     log_calls = [str(c) for c in mock_logger.error.call_args_list]
     assert any("failed to fetch repositories" in c for c in log_calls)
+
+
+def test_run_sync_cycle_uses_the_same_mirror_layout_as_sync_one_repo():
+    """The watch-mode skip filter must look where sync_one_repo writes.
+
+    If the two disagree about the layout, every cycle re-syncs forever (`exists`
+    is always False) or never syncs at all.
+    """
+    from holocron.utils import mirror_dir
+
+    repo = Repository(
+        name="shared", clone_url="https://github.com/ownerA/shared.git",
+        full_name="ownerA/shared", pushed_at=datetime(2023, 1, 1),
+    )
+    config = {
+        "concurrency": 1, "storage": "/tmp/store", "watch": True, "window": 10,
+        "backup_only": False, "dry_run": False, "checkout": False,
+    }
+    source = MagicMock()
+    source.fetch_repos.return_value = [repo]
+
+    with patch("holocron.__main__.sync_one_repo") as mock_sync, \
+         patch("holocron.__main__.os.path.exists", return_value=True) as mock_exists:
+        run_sync_cycle(config, source, MagicMock(), {})
+
+    checked = mock_exists.call_args[0][0]
+    assert checked == mirror_dir("/tmp/store", repo)
+    # Existing mirror + stale push -> skipped, so no sync was submitted.
+    mock_sync.assert_not_called()
+
+
+def test_synced_pushes_is_keyed_by_full_name():
+    """Two same-slug repos must not share one "already synced" bookkeeping slot."""
+    pushed_at = datetime(2023, 1, 1)
+    repo_a = Repository(name="shared", clone_url="u", full_name="ownerA/shared", pushed_at=pushed_at)
+    repo_b = Repository(name="shared", clone_url="u", full_name="ownerB/shared", pushed_at=pushed_at)
+    config = {
+        "concurrency": 1, "storage": "/tmp/store", "watch": True, "window": 10,
+        "backup_only": False, "dry_run": False, "checkout": False,
+    }
+    source = MagicMock()
+    source.fetch_repos.return_value = [repo_a, repo_b]
+    synced = {}
+
+    with patch("holocron.__main__.sync_one_repo"), \
+         patch("holocron.__main__.os.path.exists", return_value=False):
+        run_sync_cycle(config, source, MagicMock(), synced)
+
+    assert set(synced) == {"ownerA/shared", "ownerB/shared"}

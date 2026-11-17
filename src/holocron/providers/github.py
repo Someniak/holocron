@@ -1,9 +1,31 @@
 import requests
 from datetime import datetime
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 from ..logger import logger, log_execution
 from ..config import GITHUB_API_URL
+from ..utils import split_safe_full_name
 from .base import Provider, Repository
+
+# Hard ceiling on paginated listing requests. Real accounts have orders of
+# magnitude fewer pages (100 items/page), so hitting this means the endpoint is
+# not honouring `page` -- abort loudly instead of looping until memory is gone.
+_MAX_PAGES = 1000
+
+# Default ports, used to resolve an omitted port on a URL to its effective one.
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+def _effective_port(parsed):
+    """Returns (scheme, host, port) for a parsed URL, or None if unusable."""
+    try:
+        port = parsed.port
+    except ValueError:
+        # e.g. https://host:notaport/ -- malformed, never acceptable.
+        return None
+    if port is None:
+        port = _DEFAULT_PORTS.get(parsed.scheme)
+    if not parsed.hostname or port is None:
+        return None
+    return (parsed.scheme, parsed.hostname.lower(), port)
 
 class GitHubProvider(Provider):
     def __init__(self, token, api_url=GITHUB_API_URL):
@@ -23,23 +45,46 @@ class GitHubProvider(Provider):
             hosts.add(api_host[len("api."):])
         return hosts
 
+    def _allowed_clone_origins(self):
+        """
+        `(scheme, host, port)` origins the GitHub token may be sent to, derived
+        from the configured API URL.
+
+        The port is part of the identity on purpose: a clone URL on the allowed
+        host but a different port addresses a different service, and a clone
+        URL on a different scheme (http against an https API) would send the
+        token in cleartext. Only the configured origin's own scheme and port are
+        accepted, so both cases are refused.
+        """
+        api = _effective_port(urlparse(self.api_url))
+        if api is None:
+            return set()
+        api_scheme, _, api_port = api
+        return {(api_scheme, host, api_port) for host in self._allowed_clone_hosts()}
+
     def get_remote_url(self, repo: Repository) -> str:
         """
         Constructs the authenticated clone URL.
 
-        The OAuth token is pinned to the configured GitHub host: if the repo's
-        clone URL points anywhere else (e.g. a forged webhook payload with
-        clone_url=https://attacker.tld/...), this raises ValueError instead of
-        leaking the token to that host.
+        The OAuth token is pinned to the configured GitHub origin (scheme, host
+        and port): if the repo's clone URL points anywhere else (e.g. a forged
+        webhook payload with clone_url=https://attacker.tld/..., or the same
+        host on another port or over cleartext), this raises ValueError instead
+        of leaking the token there.
         """
         parsed = urlparse(repo.clone_url)
         if parsed.scheme not in ("http", "https") or not parsed.hostname:
             raise ValueError(f"unsupported clone URL for {repo.name!r}")
 
-        if parsed.hostname.lower() not in self._allowed_clone_hosts():
+        origin = _effective_port(parsed)
+        if origin is None:
+            raise ValueError(f"unsupported clone URL for {repo.name!r}")
+
+        if origin not in self._allowed_clone_origins():
             raise ValueError(
-                f"clone host {parsed.hostname!r} does not match the configured "
-                f"GitHub host; refusing to attach credentials"
+                f"clone origin '{origin[1]}':{origin[2]} ({origin[0]}) does not "
+                f"match the configured GitHub origin; refusing to attach "
+                f"credentials"
             )
 
         if not self.token:
@@ -119,10 +164,19 @@ class GitHubProvider(Provider):
         items = []
         page = 1
         query_params['per_page'] = 100
+        seen_ids = set()
         
         logger.debug(f"Fetching {context_name}...")
         
         while True:
+            if page > _MAX_PAGES:
+                # The endpoint keeps returning a full page, so `page` is being
+                # ignored (or the result set is absurd). Stop loudly rather than
+                # growing the list until the process is killed.
+                raise RuntimeError(
+                    f"Incomplete fetch of {context_name}: exceeded {_MAX_PAGES} "
+                    f"pages; the endpoint is not terminating pagination"
+                )
             try:
                 query_params['page'] = page
                 
@@ -132,15 +186,44 @@ class GitHubProvider(Provider):
                 r.raise_for_status()
                 
                 data = r.json()
+                if not isinstance(data, list):
+                    # A dict/scalar body would otherwise surface as a confusing
+                    # TypeError from the caller's item['id'] access.
+                    raise RuntimeError(
+                        f"expected a JSON list for {context_name}, got "
+                        f"{type(data).__name__}"
+                    )
                 if not data:
                     logger.debug(f"Page {page} empty. stopping.")
                     break
                 
                 count = len(data)
                 logger.debug(f"Page {page} returned {count} items.")
+
+                # A page that introduces no new identifier means `page` is not
+                # being honoured: continuing would loop forever.
+                new_ids = {item['id'] for item in data if item['id'] not in seen_ids}
+                if not new_ids:
+                    raise RuntimeError(
+                        f"Incomplete fetch of {context_name}: page {page} returned "
+                        f"no new items; the endpoint is not honouring pagination"
+                    )
+                seen_ids |= new_ids
                     
                 items.extend(data)
                 
+                # Authoritative signal when present: no `rel="next"` means this
+                # was the last page, whatever its size.
+                response_headers = getattr(r, "headers", None)
+                link = (
+                    response_headers.get("Link")
+                    if response_headers is not None and hasattr(response_headers, "get")
+                    else None
+                )
+                if isinstance(link, str) and 'rel="next"' not in link:
+                    logger.debug(f"No next link on page {page}. stopping.")
+                    break
+
                 if count < query_params['per_page']:
                     break
 
@@ -162,9 +245,26 @@ class GitHubProvider(Provider):
         if not self.token:
             return
 
+        # Every GitHub REST path below needs `owner/repo`; `repo.name` is the
+        # bare slug on every producer (poll and webhook), which /repos/{slug}
+        # cannot route and always 404s -- silently skipping the relaxation.
+        #
+        # The name is payload-derived, so it is re-validated here rather than
+        # trusted: exactly two plain slug segments, re-joined with the real
+        # separator the API routes on. A name with an extra `/` would otherwise
+        # address a different resource, and percent-encoding the whole thing
+        # would make even a legitimate name unroutable.
+        segments = split_safe_full_name(repo.full_name or repo.name or "")
+        if segments is None or len(segments) != 2:
+            logger.debug(
+                f"[{repo.name}] Cannot derive an owner/repo path from "
+                f"{repo.full_name or repo.name!r}; skipping the branch protection check."
+            )
+            return
+        api_repo_path = f"{quote(segments[0], safe='')}/{quote(segments[1], safe='')}"
+
         try:
             # 1. Get Repo Details (for default branch)
-            # We assume repo.name is "owner/repo" for GitHub
             headers = {
                 'Authorization': f'token {self.token}',
                 'Accept': 'application/vnd.github.v3+json'
@@ -172,16 +272,30 @@ class GitHubProvider(Provider):
             
             logger.debug(f"[{repo.name}] Checking branch protection...")
             
-            r = requests.get(f"{self.api_url}/repos/{repo.name}", headers=headers, timeout=10)
+            r = requests.get(
+                f"{self.api_url}/repos/{api_repo_path}",
+                headers=headers,
+                timeout=10,
+            )
             if r.status_code == 404:
+                logger.warning(
+                    f"[{repo.name}] Repository '{repo.full_name}' not found on "
+                    f"the GitHub destination; branch protection was not inspected."
+                )
                 return
             r.raise_for_status()
             
-            default_branch = r.json().get('default_branch', 'main')
+            repo_data = r.json()
+            default_branch = repo_data.get('default_branch', 'main')
+
+            # Address the repository by its numeric id from here on: no later
+            # request path can be steered by a payload-supplied name.
+            repo_id = repo_data.get('id')
+            repo_ref = str(repo_id) if repo_id is not None else api_repo_path
 
             # 2. Check Protection
             # GET /repos/{owner}/{repo}/branches/{branch}/protection
-            prot_url = f"{self.api_url}/repos/{repo.name}/branches/{default_branch}/protection"
+            prot_url = f"{self.api_url}/repos/{repo_ref}/branches/{quote(default_branch, safe='')}/protection"
             r_prot = requests.get(prot_url, headers=headers, timeout=10)
             
             if r_prot.status_code == 404:

@@ -3,6 +3,80 @@
 
 ## Unreleased
 
+### Security
+
+A security assessment of v1.6.6 produced 14 findings. All are addressed here.
+
+- **Pin the GitHub token to the configured origin, not just its host.**
+  `GitHubProvider.get_remote_url` compared only the hostname of the payload's
+  `clone_url`, so a clone URL on the configured host but a different port sent
+  the operator token to whatever service listened there, and an `http://` clone
+  URL against an `https://` API sent it in cleartext. Both are now refused
+  before any credential is attached and before `git` is spawned (CWE-918).
+- **Restore admission control on the webhook listener.** The handler now applies
+  a per-connection read timeout and insists on an exact-length body, so an
+  unauthenticated client can no longer pin a thread and socket indefinitely by
+  declaring a `Content-Length` and stalling (CWE-400). A truncated body is now
+  rejected instead of being HMAC-verified as if complete.
+- **Bound the webhook work queue.** Accepted deliveries were submitted to an
+  unbounded pool queue, so a burst for one repository starved every other
+  repository. Deliveries are now coalesced per repository (safe: the sync
+  re-reads the remote) and the pending set is capped. Overflow is dropped
+  server-side rather than answered `503`, which would make the forge retry.
+- **Stop logging the destination token in `--dry-run`.** The dry-run message
+  embedded the live destination URL. Credential scrubbing now runs as a logger
+  filter, so every record is redacted by default instead of per call site
+  (CWE-532).
+- **Correct the container build's integrity controls.** The GitLab/Kaniko build
+  blanked `UV_LOCK_MODE`, which made `uv sync` re-resolve dependencies live
+  against the mirror and left the published image's packages unpinned and
+  unverified. The default is now `--locked` and the override is gone. The same
+  build installed `git` and `openssl` with `apk --allow-untrusted`; signature
+  verification is now on. The Dockerfile comment asserting Alpine's index is
+  unsigned was wrong -- it is signed, and the base image already ships the keys.
+- **Pin the PyPI publish action to a commit.** `pypa/gh-action-pypi-publish`
+  was referenced by the mutable `release/v1` branch inside the job that holds
+  PyPI's trusted-publishing identity (CWE-829).
+- **Re-lock `urllib3` to 2.8.0**, closing CVE-2026-97687, CVE-2026-97688 and
+  CVE-2026-97689 (unbounded chunked-response allocation, an infinite loop in
+  chunked Deflate streaming, and HTTPS-proxy TLS handling).
+
+### Correctness
+
+Several findings were silent-failure defects with a security consequence.
+
+- **Key mirrors on the fully-qualified repository path.** Mirrors were keyed on
+  the bare slug, so `ownerA/shared` and `ownerB/shared` collided: the second was
+  never mirrored and the destination received the wrong project's content with a
+  zero exit status. Mirrors now live at `<storage>/<owner>/<repo>.git`, and the
+  fetch path revalidates the recorded `origin` before fetching, re-pointing and
+  warning on a mismatch. GitLab sources now populate `full_name` too so they get
+  the same isolation. **This changes the on-disk layout: existing mirrors under
+  `<storage>/<repo>.git` are not reused, so plan a one-time re-clone.**
+- **Derive the sidecar checkout path by stripping only the trailing `.git`.**
+  Rewriting the first `.git` substring anywhere in the path made `x`, `x.git`
+  and `x.gitex` share one working tree, and a repository named `.git` resolved
+  its checkout to the storage root, running `git pull` in a repository the tool
+  never cloned. `.git` is now a reserved name, and the checkout must be a proper
+  subdirectory of the storage root.
+- **Fix GitHub destination branch protection.** `prepare_push` built its API path
+  from the bare slug, which the GitHub REST API cannot route, so the call always
+  404'd and force-push was never enabled -- mirroring into a protected GitHub
+  repository failed every push with nothing in the log. The lookup now uses
+  `owner/repo` and re-keys on the numeric repository id, and a missing
+  destination repository is logged instead of silently skipped.
+- **Terminate API pagination explicitly.** `_get_all_pages` looped until a short
+  page arrived, so an endpoint that ignored `page` was followed until memory ran
+  out. It now honours the `Link` / `X-Next-Page` header, aborts on a page that
+  introduces no new items, enforces a page ceiling, and rejects a non-list body.
+- **Harden webhook payload parsing.** A correctly signed but malformed delivery
+  (a JSON array, a scalar `repository`, a `pushed_at` outside the platform range,
+  or a non-UTF-8 body) raised out of the handler thread and dropped the
+  connection with no response, so the forge recorded the delivery as failed and
+  retried. All now return a normal `400`. Stale deliveries outside the freshness
+  window are acknowledged without queueing a sync, so a captured signed delivery
+  cannot be replayed indefinitely.
+
 ## v1.6.6 - 2026-07-17
 
 ### Infrastructure
