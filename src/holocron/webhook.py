@@ -16,6 +16,7 @@ import socket
 import ssl
 import hmac
 import json
+import time
 import hashlib
 import threading
 from datetime import datetime, timezone
@@ -28,10 +29,18 @@ from .providers.base import Repository
 # Content-Length can't make us buffer unbounded data.
 _MAX_BODY_BYTES = 25 * 1024 * 1024
 
-# Max seconds a client may take to deliver a complete request. GitHub's own
-# delivery timeout is ~10s, so a generous 15s never breaks a real delivery,
-# while bounding how long a stalled connection can pin a handler thread.
+# Max seconds a client may take to deliver a complete request: request line,
+# headers and body. GitHub's own delivery timeout is ~10s, so a generous 15s
+# never breaks a real delivery. Unlike a per-recv timeout, this deadline cannot
+# be extended by trickling one byte before each timeout.
+_MAX_REQUEST_SECONDS = 15
+
+# Per-recv timeout, used to reclaim a completely idle connection.
 _READ_TIMEOUT_SECONDS = 15
+
+# Max concurrent accepted connections. ThreadingHTTPServer otherwise spawns an
+# unbounded thread per connection; excess connections are closed immediately.
+_MAX_CONCURRENT_CONNECTIONS = 128
 
 # GitHub's own delivery timeout is ~10s and a delivery is not worth replaying
 # beyond that, so anything older than this window is a replay or a stale event.
@@ -142,6 +151,96 @@ def _is_stale(payload):
     return age > _DELIVERY_FRESHNESS_SECONDS
 
 
+class _DeadlineReader:
+    """File-like wrapper that enforces a total deadline on one request.
+
+    A per-recv socket timeout can be defeated by a client that sends one byte
+    just before each timeout. This wrapper checks the wall-clock deadline before
+    every read and caps each socket timeout to the time left, so the request
+    line, headers and body share one hard deadline. It implements readline over
+    ``read1`` for the same reason; BaseHTTPRequestHandler parses headers with
+    ``readline`` and would otherwise bypass the deadline.
+    """
+
+    def __init__(self, rfile, connection, deadline):
+        self._rfile = rfile
+        self._connection = connection
+        self._deadline = deadline
+        self._buffer = b""
+
+    def _remaining(self) -> float:
+        remaining = self._deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("request deadline exceeded")
+        return remaining
+
+    def _read1(self, size: int) -> bytes:
+        self._connection.settimeout(min(self._remaining(), _READ_TIMEOUT_SECONDS))
+        read1 = getattr(self._rfile, "read1", None)
+        if read1 is not None:
+            return read1(size)
+        return self._rfile.read(size)
+
+    def read(self, size: int = -1) -> bytes:
+        if size is None or size < 0:
+            chunks = [self._buffer]
+            self._buffer = b""
+            while True:
+                chunk = self._read1(65536)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+            return b"".join(chunks)
+
+        data = bytearray()
+        if self._buffer:
+            take = min(size, len(self._buffer))
+            data.extend(self._buffer[:take])
+            self._buffer = self._buffer[take:]
+        while len(data) < size:
+            chunk = self._read1(min(size - len(data), 65536))
+            if not chunk:
+                break
+            data.extend(chunk)
+        return bytes(data)
+
+    def readline(self, size: int = -1) -> bytes:
+        while True:
+            newline = self._buffer.find(b"\n")
+            if newline != -1:
+                end = newline + 1
+                if size is not None and size >= 0:
+                    end = min(end, size)
+                line = self._buffer[:end]
+                self._buffer = self._buffer[end:]
+                return line
+
+            if size is not None and size >= 0 and len(self._buffer) >= size:
+                line = self._buffer[:size]
+                self._buffer = self._buffer[size:]
+                return line
+
+            chunk = self._read1(8192)
+            if not chunk:
+                line = self._buffer
+                self._buffer = b""
+                if size is not None and size >= 0:
+                    line = line[:size]
+                return line
+            self._buffer += chunk
+
+    def readinto(self, buffer) -> int:
+        data = self.read(len(buffer))
+        buffer[: len(data)] = data
+        return len(data)
+
+    def close(self):
+        return self._rfile.close()
+
+    def __getattr__(self, name):
+        return getattr(self._rfile, name)
+
+
 def _make_handler(secret, on_push, path):
     """Builds a request handler class closed over the server's config."""
 
@@ -154,14 +253,15 @@ def _make_handler(secret, on_push, path):
             return ""
 
         # Bound every accepted connection, before a single request byte is read.
-        # ThreadingHTTPServer spawns one thread per connection with no admission
-        # control, so without a timeout a client that connects and stalls (or
-        # that declares a Content-Length and never sends it) pins one thread, one
-        # socket and up to _MAX_BODY_BYTES of buffer indefinitely -- with no
-        # credential. The timeout reclaims the thread instead.
+        # A per-recv timeout alone only reclaims an idle client: one that keeps
+        # trickling bytes renews it. The reader below therefore enforces one
+        # wall-clock deadline for the whole request, and the server has a
+        # separate connection ceiling.
         def setup(self):
             super().setup()
-            self.connection.settimeout(_READ_TIMEOUT_SECONDS)
+            deadline = time.monotonic() + _MAX_REQUEST_SECONDS
+            self.connection.settimeout(min(_MAX_REQUEST_SECONDS, _READ_TIMEOUT_SECONDS))
+            self.rfile = _DeadlineReader(self.rfile, self.connection, deadline)
 
         def handle_one_request(self):
             try:
@@ -199,13 +299,12 @@ def _make_handler(secret, on_push, path):
             """
             Reads exactly `length` body bytes, or returns None after replying.
 
-            The read is bounded by the per-connection timeout set in setup(), so
-            a client that declares a length and stalls cannot pin this thread
-            forever. The byte count is also verified: `rfile.read(n)` can return
-            short, and HMAC-ing a truncated buffer would treat an incomplete
-            request as complete.
+            The read is bounded by the request-wide deadline enforced by the
+            reader installed in setup(), so neither a stalled client nor one
+            trickling bytes can pin this thread forever. The byte count is also
+            verified: `rfile.read(n)` can return short, and HMAC-ing a truncated
+            buffer would treat an incomplete request as complete.
             """
-            self.connection.settimeout(_READ_TIMEOUT_SECONDS)
             try:
                 body = self.rfile.read(length)
             except (socket.timeout, TimeoutError, OSError):
@@ -347,6 +446,40 @@ def build_ssl_context(cert_file, key_file):
     return context
 
 
+class _BoundedThreadingHTTPServer(ThreadingHTTPServer):
+    """ThreadingHTTPServer with a hard ceiling on concurrent connections.
+
+    ThreadingHTTPServer spawns one thread per accepted connection with no
+    admission control, so a connection flood would exhaust threads and memory
+    even with a per-connection timeout. A semaphore bounds the live handlers;
+    excess connections are closed immediately without spawning a thread.
+    """
+
+    def __init__(self, *args, **kwargs):
+        self._slots = threading.BoundedSemaphore(_MAX_CONCURRENT_CONNECTIONS)
+        super().__init__(*args, **kwargs)
+
+    def process_request(self, request, client_address):
+        if not self._slots.acquire(blocking=False):
+            logger.warning("[webhook] Connection limit reached; dropping a new connection.")
+            try:
+                self.shutdown_request(request)
+            except Exception:
+                pass
+            return
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            self._slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._slots.release()
+
+
 def start_webhook_server(port, secret, on_push, path="/webhook", host="0.0.0.0",
                          cert_file=None, key_file=None):
     """
@@ -358,10 +491,10 @@ def start_webhook_server(port, secret, on_push, path="/webhook", host="0.0.0.0",
     on_push(repo) is invoked for each valid push event and should return quickly
     (e.g. submit to a thread pool); it runs on the server's request thread.
 
-    Returns the ThreadingHTTPServer so the caller can shut it down.
+    Returns the server so the caller can shut it down.
     """
     handler_cls = _make_handler(secret, on_push, path)
-    server = ThreadingHTTPServer((host, port), handler_cls)
+    server = _BoundedThreadingHTTPServer((host, port), handler_cls)
 
     scheme = "http"
     if cert_file or key_file:

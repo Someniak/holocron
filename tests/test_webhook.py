@@ -507,6 +507,99 @@ def test_stalled_body_is_dropped_within_the_read_timeout():
         srv.server_close()
 
 
+def test_slow_drip_cannot_extend_the_request_deadline(monkeypatch):
+    """A client trickling bytes must not renew the per-recv timeout forever.
+
+    The per-recv timeout is deliberately large here, so only the wall-clock
+    request deadline can end the read.
+    """
+    import holocron.webhook as webhook_module
+
+    monkeypatch.setattr(webhook_module, "_MAX_REQUEST_SECONDS", 1.0)
+    monkeypatch.setattr(webhook_module, "_READ_TIMEOUT_SECONDS", 10.0)
+
+    received = []
+    srv = start_webhook_server(
+        port=0, secret=SECRET, on_push=received.append,
+        path="/webhook", host="127.0.0.1",
+    )
+    try:
+        sock = socket.create_connection(("127.0.0.1", srv.server_address[1]), timeout=5)
+        sock.sendall(
+            b"POST /webhook HTTP/1.1\r\nHost: h\r\n"
+            b"Content-Length: 100\r\n\r\n"
+        )
+        start = time.monotonic()
+        got_data = False
+        while time.monotonic() - start < 3:
+            try:
+                sock.sendall(b"A")
+            except OSError:
+                break
+            try:
+                if sock.recv(4096):
+                    got_data = True
+                    break
+            except socket.timeout:
+                pass
+            time.sleep(0.1)
+        elapsed = time.monotonic() - start
+        if not got_data:
+            try:
+                sock.settimeout(1)
+                got_data = bool(sock.recv(4096))
+            except (socket.timeout, OSError):
+                got_data = False
+        assert got_data, "listener never terminated a slow-drip request"
+        assert elapsed < 2.5, f"request deadline not enforced (took {elapsed:.1f}s)"
+        sock.close()
+        assert received == []
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+def test_connection_limit_drops_excess_connections(monkeypatch):
+    """The listener must not spawn an unbounded thread per connection."""
+    import holocron.webhook as webhook_module
+
+    monkeypatch.setattr(webhook_module, "_MAX_CONCURRENT_CONNECTIONS", 2)
+    monkeypatch.setattr(webhook_module, "_MAX_REQUEST_SECONDS", 10.0)
+
+    srv = start_webhook_server(
+        port=0, secret=SECRET, on_push=lambda repo: None,
+        path="/webhook", host="127.0.0.1",
+    )
+    held = []
+    try:
+        for _ in range(2):
+            sock = socket.create_connection(("127.0.0.1", srv.server_address[1]), timeout=5)
+            # A partial request keeps the handler alive and the slot held.
+            sock.sendall(b"POST /webhook HTTP/1.1\r\nHost: h\r\n")
+            held.append(sock)
+
+        deadline = time.monotonic() + 2
+        while srv._slots._value > 0 and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert srv._slots._value == 0, "test did not fill the connection slots"
+
+        excess = socket.create_connection(("127.0.0.1", srv.server_address[1]), timeout=5)
+        excess.settimeout(2)
+        try:
+            excess.sendall(b"POST /webhook HTTP/1.1\r\nHost: h\r\n")
+            data = excess.recv(1024)
+        except (socket.timeout, ConnectionResetError):
+            data = b""
+        finally:
+            excess.close()
+        assert not data, "excess connection was not dropped"
+    finally:
+        for sock in held:
+            sock.close()
+        srv.shutdown()
+        srv.server_close()
+
+
 def test_short_body_is_rejected_not_hmaced(monkeypatch):
     """A truncated body must be refused rather than verified as if complete."""
     import holocron.webhook as webhook_module
