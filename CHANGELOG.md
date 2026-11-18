@@ -40,6 +40,15 @@ A security assessment of v1.6.6 produced 14 findings. All are addressed here.
 - **Re-lock `urllib3` to 2.8.0**, closing CVE-2026-97687, CVE-2026-97688 and
   CVE-2026-97689 (unbounded chunked-response allocation, an infinite loop in
   chunked Deflate streaming, and HTTPS-proxy TLS handling).
+- **Bound the webhook listener's total request time and connections.** A
+  per-recv timeout could be renewed indefinitely by a client trickling one byte
+  before each timeout. The handler now enforces one wall-clock deadline across
+  the request line, headers and body, and the server caps concurrent
+  connections so a flood cannot spawn unbounded handler threads.
+- **Refuse colliding GitLab destination paths.** Destination paths are built
+  from the bare slug, so `ownerA/shared` and `ownerB/shared` mapped to the same
+  project and the second silently overwrote the first. The first source now
+  claims the path; a different source resolving to it is refused and logged.
 
 ### Correctness
 
