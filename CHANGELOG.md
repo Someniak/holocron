@@ -40,6 +40,7 @@ A security assessment of v1.6.6 produced 14 findings. All are addressed here.
 - **Re-lock `urllib3` to 2.8.0**, closing CVE-2026-97687, CVE-2026-97688 and
   CVE-2026-97689 (unbounded chunked-response allocation, an infinite loop in
   chunked Deflate streaming, and HTTPS-proxy TLS handling).
+- **Update `certifi` to 2026.10.23**, closing PYSEC-2026-4320 in the CA bundle.
 - **Bound the webhook listener's total request time and connections.** A
   per-recv timeout could be renewed indefinitely by a client trickling one byte
   before each timeout. The handler now enforces one wall-clock deadline across
