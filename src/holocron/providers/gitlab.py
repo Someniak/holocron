@@ -1,3 +1,5 @@
+import threading
+
 import requests
 from datetime import datetime
 from ..logger import logger, log_execution
@@ -17,6 +19,14 @@ class GitLabProvider(Provider):
         # variable (the source's owner/repo) so GitLab runners can report CI
         # checks back to the matching GitHub commit.
         self.provision_status_var = provision_status_var
+
+        # Destination path -> source identity. GitLab destination paths are
+        # keyed on the bare slug (plus the single configured namespace), so two
+        # source repositories with the same name under different owners would
+        # push to the same project and silently overwrite each other. The first
+        # claim wins; a different identity for the same path is refused.
+        self._claimed_paths = {}
+        self._claims_lock = threading.Lock()
 
     @log_execution
     def fetch_repos(self) -> list[Repository]:
@@ -66,10 +76,8 @@ class GitLabProvider(Provider):
         # The 'repo' object comes from the source usually.
         # We need to find the project on GitLab that matches the destination path.
         
-        project_path = repo.name
-        if self.namespace:
-            project_path = f"{self.namespace}/{repo.name}"
-            
+        project_path = self._claim_destination(repo)
+
         # URL encode path
         encoded_path = project_path.replace("/", "%2F")
         base_url = self.api_url.rstrip('/')
@@ -171,6 +179,33 @@ class GitLabProvider(Provider):
         except Exception as e:
             logger.warning(f"Failed to provision GitLab CI/CD variable {key} for project {project_id}: {e}")
 
+    def _destination_path(self, repo: Repository) -> str:
+        """The GitLab project path (``[namespace/]slug``) this repo pushes to."""
+        if self.namespace:
+            return f"{self.namespace}/{repo.name}"
+        return repo.name
+
+    def _claim_destination(self, repo: Repository) -> str:
+        """
+        Reserves the destination path for this source repository.
+
+        The path is derived from the bare slug, so two different sources can
+        resolve to the same GitLab project. Returning the path for the first
+        identity and raising for any other makes that collision loud instead of
+        letting the second repository overwrite the first with a zero exit code.
+        """
+        path = self._destination_path(repo)
+        identity = repo.full_name or repo.name
+        with self._claims_lock:
+            claimed = self._claimed_paths.get(path)
+            if claimed is not None and claimed != identity:
+                raise ValueError(
+                    f"destination project '{path}' is already used by "
+                    f"'{claimed}'; refusing to push '{identity}' to the same path"
+                )
+            self._claimed_paths[path] = identity
+        return path
+
     def get_remote_url(self, repo: Repository) -> str:
         """
         Constructs the authenticated URL for pushing to GitLab.
@@ -182,11 +217,8 @@ class GitLabProvider(Provider):
             base_url = base_url[:-7]
         base_url = base_url.rstrip('/')
 
-        url = f"{base_url}/{repo.name}.git"
-
-        if self.namespace:
-            # Inject namespace (group/user) between base_url and repo_name
-            url = f"{base_url}/{self.namespace}/{repo.name}.git"
+        path = self._claim_destination(repo)
+        url = f"{base_url}/{path}.git"
 
         if self.token:
             if url.startswith("https://"):

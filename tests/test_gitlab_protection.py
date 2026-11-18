@@ -165,3 +165,28 @@ def test_get_all_pages_rejects_non_list_body(mock_get):
     import pytest
     with pytest.raises(RuntimeError, match="expected a JSON list"):
         provider._get_all_pages("http://api/projects", {}, "projects")
+
+
+def test_destination_slug_collision_is_refused():
+    """Two owners' same-named repos must not share one GitLab destination.
+
+    The destination path is built from the bare slug (+ namespace), so the
+    second source would overwrite the first with a zero exit status. The first
+    identity claims the path; any other identity is refused.
+    """
+    provider = GitLabProvider("http://gitlab.com/api/v4", "token", namespace="group")
+    repo_a = Repository(
+        name="shared", clone_url="http://src/a.git", full_name="ownerA/shared"
+    )
+    repo_b = Repository(
+        name="shared", clone_url="http://src/b.git", full_name="ownerB/shared"
+    )
+
+    url_a = provider.get_remote_url(repo_a)
+    assert url_a.endswith("/group/shared.git")
+
+    # Looking the same repository up again is fine.
+    assert provider.get_remote_url(repo_a) == url_a
+
+    with pytest.raises(ValueError, match="already used"):
+        provider.get_remote_url(repo_b)
