@@ -22,18 +22,20 @@ COPY --from=uv /uv /uvx /bin/
 
 # Re-declare the global ARGs so they are in scope below.
 ARG UV_INDEX_URL
-# Lock mode for `uv sync`.
+# Dependencies are installed from the single uv.lock, not re-resolved.
 #
-# `--locked` asserts that uv.lock is still consistent with pyproject.toml and
-# installs exactly the versions and hashes it records; it errors rather than
-# silently re-resolving. That guarantee must not be weakened for the internal
-# build: `--frozen` installs the lock's recorded artifact URLs verbatim, which an
-# egress-restricted mirror cannot serve, and dropping the flag altogether makes
-# uv re-resolve live against whatever index it is pointed at -- which would leave
-# the published image's dependencies unpinned and unverified. A mirror configured
-# as a proxying repository re-serves the same artifact URLs the lock records, so
-# `--locked` works on both build paths. Do not override this with an empty value.
-ARG UV_LOCK_MODE=--locked
+# `uv export --frozen` turns the lock into exact pins with hashes without
+# consulting the index, and `uv pip install --require-hashes` installs those
+# artifacts from whichever index UV_DEFAULT_INDEX points at. The index can
+# therefore change between the public build and the internal mirror while the
+# versions and hashes cannot: the mirror can only serve the artifacts the lock
+# already records. The export deliberately uses --frozen rather than --locked
+# because --locked also compares the lock against the configured index and
+# would reject the mirror. CI guards lock freshness with `uv lock --check`.
+#
+# The build backend is locked too (`[dependency-groups] build` in
+# pyproject.toml), so the project install below runs with
+# --no-build-isolation and never pulls an unpinned hatchling from the index.
 
 # Use the base image's interpreter; never download a managed Python.
 # UV_DEFAULT_INDEX points uv at the PyPI index (public by default; the ProGet
@@ -47,17 +49,29 @@ ENV UV_PYTHON=python3.14 \
 
 WORKDIR /app
 
-# Resolve dependencies first so this layer is cached until pyproject/uv.lock change.
+# Resolve dependencies first so this layer is cached until pyproject/uv.lock
+# change. Every requirement is fully pinned and hash-checked by uv.lock.
 COPY pyproject.toml uv.lock ./
-RUN uv sync ${UV_LOCK_MODE} --no-dev --no-install-project
+RUN uv export --frozen --no-dev --no-emit-project --format requirements-txt \
+        -o /tmp/requirements.txt \
+    && uv export --frozen --only-group build --no-emit-project --format requirements-txt \
+        -o /tmp/build-requirements.txt \
+    && uv venv "${UV_PROJECT_ENVIRONMENT}" \
+    && uv pip install --python "${UV_PROJECT_ENVIRONMENT}/bin/python" \
+        --require-hashes \
+        -r /tmp/requirements.txt \
+        -r /tmp/build-requirements.txt
 
-# Install the project itself against the locked environment. --no-editable
-# copies the package into site-packages instead of linking to ./src, so the
-# runtime image doesn't depend on the source tree (and its permissions) being
-# readable by the unprivileged user.
+# Install the project itself against the locked environment. --no-deps keeps
+# the resolver out entirely, and --no-build-isolation reuses the locked
+# hatchling from the build group. --no-editable copies the package into
+# site-packages instead of linking to ./src, so the runtime image doesn't depend
+# on the source tree (and its permissions) being readable by the unprivileged
+# user.
 COPY README.md ./
 COPY src ./src
-RUN uv sync ${UV_LOCK_MODE} --no-dev --no-editable
+RUN uv pip install --python "${UV_PROJECT_ENVIRONMENT}/bin/python" \
+        --no-deps --no-build-isolation .
 
 # ---- Runtime stage ----------------------------------------------------------
 FROM ${PYTHON_IMAGE}
@@ -70,22 +84,30 @@ FROM ${PYTHON_IMAGE}
 # public Alpine CDN. When APK_REPO_URL is set (the GitLab build) it points at the
 # internal Alpine feed.
 #
-# Signature verification is NOT disabled for that feed. `--allow-untrusted`
-# would accept an unsigned or wrongly-signed index and any package served from
-# it, so a substituted `git` would run on every clone/fetch/push inside the
-# process holding the mirroring tokens, and a substituted `openssl` would mint
-# the listener's certificate. An internal mirror is expected to proxy the
-# upstream index, whose .SIGN.RSA member verifies against the Alpine keys this
-# base image already ships in /etc/apk/keys. If a feed instead re-signs its own
-# index, trust that key explicitly by copying its public half into
-# /etc/apk/keys/ as a build step before this RUN; do not reintroduce
-# --allow-untrusted. There is deliberately no unsigned fallback: if the feed
-# cannot satisfy either, the build must fail rather than publish unverified
-# binaries.
+# The internal ProGet feed serves an UNSIGNED APKINDEX (it strips the upstream
+# .SIGN.RSA member), so `apk add` cannot authenticate that index. The install is
+# therefore split in two:
+#
+#   1. `apk fetch` resolves and downloads the packages using the untrusted index.
+#   2. The index is removed and the local .apk files are installed WITHOUT
+#      --allow-untrusted. apk verifies each package's own signature against the
+#      Alpine keys this base image ships in /etc/apk/keys, so a substituted
+#      git/openssl package is rejected. (Verified: a tampered .apk fails and is
+#      not installed.)
+#
+# What this does NOT authenticate is the *index*: a hostile feed could offer a
+# different Alpine-signed version (e.g. a rollback). A feed that preserves or
+# re-signs the upstream index, with its key added to /etc/apk/keys, remains the
+# proper fix. This split is the strongest control available against the current
+# feed without reintroducing an unsigned install.
 ARG APK_REPO_URL=
 RUN if [ -n "$APK_REPO_URL" ]; then \
         echo "${APK_REPO_URL}/" > /etc/apk/repositories \
-        && apk add --no-cache git openssl; \
+        && mkdir -p /tmp/apk-packages \
+        && apk fetch --allow-untrusted --recursive --no-cache -o /tmp/apk-packages git openssl \
+        && : > /etc/apk/repositories \
+        && apk add --no-network --no-cache /tmp/apk-packages/*.apk \
+        && rm -rf /tmp/apk-packages; \
     else \
         apk add --no-cache git openssl; \
     fi

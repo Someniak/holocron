@@ -45,6 +45,9 @@ unit-tests:
     - .github-check
   stage: test
   script:
+    # The image build exports the lock with --frozen (so the same lock works
+    # against PyPI and the internal mirror), which does not validate it.
+    - uv lock --check
     - uv sync --all-extras --dev
     - uv run pytest
 

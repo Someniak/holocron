@@ -31,6 +31,11 @@ jobs:
       - name: Set up Python ${{ matrix.python-version }}
         run: uv python install ${{ matrix.python-version }}
 
+      - name: Check the lockfile is current
+        # The image build exports the lock with --frozen (so it works against
+        # either PyPI or the internal mirror), which does not validate it.
+        run: uv lock --check
+
       - name: Install dependencies
         run: uv sync --all-extras --dev
 

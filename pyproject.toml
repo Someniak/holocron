@@ -31,4 +31,5 @@ pythonpath = "src"
 norecursedirs = ["mirror-data", ".venv", ".git"]
 testpaths = ["tests"]
 
-
+[dependency-groups]
+build = ["hatchling"]

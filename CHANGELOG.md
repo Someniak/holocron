@@ -77,6 +77,26 @@ Several findings were silent-failure defects with a security consequence.
   window are acknowledged without queueing a sync, so a captured signed delivery
   cannot be replayed indefinitely.
 
+### Infrastructure
+
+- **Keep one dependency lock for both image builds.** The internal Kaniko build
+  now derives exact pins and hashes from `uv.lock` with `uv export --frozen` and
+  installs them with `uv pip install --require-hashes`. The index can change --
+  PyPI for the public build, the internal mirror for Kaniko -- while the pinned
+  versions and hashes cannot, so there is no second, drift-prone lockfile. The
+  build backend (`hatchling`) is a locked `build` dependency group, so the
+  project install runs with `--no-build-isolation` instead of fetching an
+  unpinned build tool from the index. CI runs `uv lock --check`, because the
+  export uses `--frozen` and therefore does not validate lock freshness itself.
+- **Verify the internal image's APK packages without trusting the feed index.**
+  The internal feed serves an unsigned `APKINDEX` (it strips the upstream
+  `.SIGN.RSA` member). The build now fetches the packages, removes the index,
+  and installs the local `.apk` files without `--allow-untrusted`: apk verifies
+  each package's own signature against the Alpine keys in the base image, so a
+  substituted `git`/`openssl` is rejected. A feed that preserves or re-signs the
+  upstream index remains the preferred long-term fix, because the index itself
+  is still unauthenticated.
+
 ## v1.6.6 - 2026-07-17
 
 ### Infrastructure
