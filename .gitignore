@@ -48,6 +48,18 @@ cover/
 mirror-data/
 *.git
 
+# Local security assessment artifacts (reports, PoCs, run state)
+strix_runs/
+
+# OpenCode runtime state (shadow snapshots, logs, tool output, downloaded tools).
+# Project definitions (opencode.json, skills/, commands/, agents/) stay tracked.
+.opencode/opencode/
+.opencode/opentui/
+.opencode/uv/
+
+# Local scratch harness, not part of the project
+whtest_server.py
+
 # Environment Variables
 .env
 
